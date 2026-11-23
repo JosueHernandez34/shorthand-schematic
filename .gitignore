@@ -1,0 +1,4 @@
+tests/*.svg
+tests/*.png
+tests/*.txt
+tests/dom.html

@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shorthand to Schematic</title>
+<style>
+  :root { --bg:#f6f7f9; --panel:#fff; --ink:#1b2430; --muted:#66707d; --line:#d9dee5; --accent:#2457c5; --err:#b3261e; --warn:#8a5a00; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--ink); height:100vh; display:flex; flex-direction:column; }
+  header { padding:10px 16px; background:var(--panel); border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  header h1 { font-size:17px; margin:0; margin-right:auto; }
+  button { font:inherit; font-size:13px; padding:6px 12px; border:1px solid var(--line); background:#fff; border-radius:6px; cursor:pointer; }
+  button:hover { border-color:var(--accent); color:var(--accent); }
+  main { flex:1; display:grid; grid-template-columns: minmax(280px, 38%) 1fr; min-height:0; }
+  .left { display:flex; flex-direction:column; border-right:1px solid var(--line); background:var(--panel); min-height:0; }
+  textarea { flex:1; width:100%; border:0; padding:14px; font: 14px/1.5 ui-monospace, Consolas, Menlo, monospace; resize:none; outline:none; tab-size:3; white-space:pre; }
+  #msgs { border-top:1px solid var(--line); padding:8px 14px; font-size:13px; max-height:130px; overflow:auto; }
+  #msgs:empty { display:none; }
+  .err { color:var(--err); } .warn { color:var(--warn); }
+  details { border-top:1px solid var(--line); padding:8px 14px; font-size:13px; color:var(--muted); }
+  details summary { cursor:pointer; color:var(--ink); }
+  details li { margin:3px 0; }
+  code { background:#eef1f5; padding:1px 4px; border-radius:3px; font-size:12px; }
+  .right { overflow:auto; padding:20px; min-height:0; }
+  #out { background:#fff; border:1px solid var(--line); border-radius:8px; display:inline-block; min-width:100%; }
+  #out svg { display:block; }
+  .empty { padding:40px; color:var(--muted); }
+  @media (max-width:760px){ main{ grid-template-columns:1fr; grid-template-rows: 45% 55%; } .left{ border-right:0; border-bottom:1px solid var(--line);} }
+</style>
+</head>
+<body>
+<header>
+  <h1>Shorthand → Schematic</h1>
+  <button id="ex">Load example</button>
+  <button id="svg">Download SVG</button>
+  <button id="png">Download PNG</button>
+</header>
+<main>
+  <div class="left">
+    <textarea id="src" spellcheck="false"></textarea>
+    <div id="msgs"></div>
+    <details>
+      <summary>Syntax rules</summary>
+      <ul>
+        <li>First line <code>*Name\</code> titles the diagram; last line <code>*\</code> closes it.</li>
+        <li>Each line is <code>*A, B\ comment</code>. Elements in a line, and successive lines, are in series. The first element is the start.</li>
+        <li><code>branch</code>: elements leave the path and end there (no return).</li>
+        <li><code>branch return</code> / <code>return^n</code>: the branch rejoins the path n branch levels up (<code>return</code> = <code>return^1</code>).</li>
+        <li><code>branch wait</code>: the branch stays open; the next line at the same indent continues it.</li>
+        <li><code>meet</code>: a line where a returning branch rejoins (after its last element). Returns are matched to meets in the order their branches were opened.</li>
+        <li><code>end</code>: marks the last element of the line as the end. Use <code>A_1</code> for subscripts.</li>
+      </ul>
+    </details>
+  </div>
+  <div class="right"><div id="out"></div></div>
+</main>
+
+<script>
+// ==CORE-START==
+const EXAMPLE = `*Schematic\\
+   *S, A\\ series
+      *A_1\\branch wait
+         *A_2, B_2\\ branch return^2
+      *B_1\\ return
+   *B\\ series meet
+      *C, D\\ series meet
+   *E\\ end
+*\\
+`;
+
+function parse(src) {
+  const errors = [], warnings = [];
+  const lines = src.replace(/\t/g, '   ').split(/\r?\n/);
+  let title = 'Schematic', started = false;
+  const items = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    if (!raw.trim()) continue;
+    const m = raw.match(/^(\s*)\*\s*([^\\]*?)\s*\\\s*(.*)$/);
+    if (!m) { errors.push(`Line ${i + 1}: expected the form *elements\\ comment`); continue; }
+    const indent = m[1].length, body = m[2], comment = m[3].toLowerCase();
+    if (!started) { title = body || 'Schematic'; started = true; continue; }
+    if (body === '') break; // closing *\
+    const els = body.split(',').map(s => s.trim()).filter(Boolean);
+    if (!els.length) { errors.push(`Line ${i + 1}: no elements`); continue; }
+    const r = comment.match(/\breturn(?:\s*\^\s*(\d+))?/);
+    items.push({
+      ln: i + 1, indent, els,
+      branch: /\bbranch\b/.test(comment), wait: /\bwait\b/.test(comment),
+      ret: !!r, retN: r && r[1] ? Math.max(1, +r[1]) : 1,
+      meet: /\bmeet\b/.test(comment), end: /\bend\b/.test(comment),
+    });
+  }
+
+  const nodes = [], edges = [];
+  const addNode = o => { o.id = nodes.length; nodes.push(o); return o; };
+  const link = (a, b) => edges.push([a.id, b.id]);
+
+  const main = { indent: null, lane: 0, cursor: null, order: 0, wait: false };
+  let frames = [main], laneCount = 1, orderCount = 1, first = true;
+  const pending = [];
+
+  for (const it of items) {
+    if (main.indent === null) main.indent = it.indent;
+    while (frames.length > 1 && frames[frames.length - 1].indent > it.indent) frames.pop();
+    let f = frames[frames.length - 1];
+
+    if (it.branch) {
+      const parent = f;
+      if (!parent.cursor) { errors.push(`Line ${it.ln}: branch before any element`); continue; }
+      const j = addNode({ type: 'junction', lane: parent.lane, w: 10 });
+      link(parent.cursor, j);
+      parent.cursor = j;
+      f = { indent: it.indent, lane: laneCount++, cursor: j, order: orderCount++, wait: it.wait };
+      frames.push(f);
+    }
+
+    let lastEl = null;
+    for (const label of it.els) {
+      const n = addNode({ type: 'el', label, lane: f.lane, w: Math.max(56, 16 + label.replace('_', '').length * 10) });
+      if (first) { n.role = 'start'; first = false; }
+      if (f.cursor) link(f.cursor, n);
+      f.cursor = n; lastEl = n;
+    }
+    if (it.end) lastEl.role = 'end';
+
+    if (it.meet) {
+      const cand = pending.filter(p => !p.done && p.target === f).sort((a, b) => a.order - b.order)[0];
+      if (cand) {
+        const j = addNode({ type: 'junction', lane: f.lane, w: 10 });
+        link(f.cursor, j); f.cursor = j;
+        link(cand.last, j); cand.done = true;
+      }
+    }
+
+    const idx = frames.indexOf(f);
+    if (it.ret) {
+      if (idx === 0) { warnings.push(`Line ${it.ln}: return on the main path ignored`); }
+      else {
+        const target = frames[Math.max(0, idx - it.retN)];
+        pending.push({ last: f.cursor, target, order: f.order, done: false, ln: it.ln });
+        frames.splice(idx);
+      }
+    } else if (it.branch && !it.wait) {
+      frames.splice(idx); // plain branch ends at its last element
+    }
+  }
+
+  // returns that never met a "meet" line: merge at the end of their target path
+  const endJ = new Map();
+  for (const p of pending.filter(p => !p.done)) {
+    warnings.push(`Line ${p.ln}: return has no matching "meet" line; merged at the end of its path`);
+    let j = endJ.get(p.target);
+    if (!j) {
+      j = addNode({ type: 'junction', lane: p.target.lane, w: 10 });
+      if (p.target.cursor) link(p.target.cursor, j);
+      endJ.set(p.target, j);
+    }
+    link(p.last, j);
+  }
+
+  return { title, nodes, edges, lanes: laneCount, errors, warnings };
+}
+
+const CFG = { H: 44, GAP: 46, LANE: 84, TOP: 78, LEFT: 36 };
+
+function layout(model) {
+  const { nodes, edges } = model;
+  const inc = nodes.map(() => []);
+  edges.forEach(([a, b]) => inc[b].push(a));
+  const layer = nodes.map(() => 0);
+  nodes.forEach((n, i) => { layer[i] = inc[i].length ? Math.max(...inc[i].map(a => layer[a])) + 1 : 0; });
+  const nLayers = Math.max(0, ...layer) + 1;
+  const colW = new Array(nLayers).fill(0);
+  nodes.forEach((n, i) => { colW[layer[i]] = Math.max(colW[layer[i]], n.w); });
+  const colX = []; let cum = CFG.LEFT;
+  for (let l = 0; l < nLayers; l++) { colX[l] = cum + colW[l] / 2; cum += colW[l] + CFG.GAP; }
+  nodes.forEach((n, i) => { n.x = colX[layer[i]]; n.y = CFG.TOP + n.lane * CFG.LANE; });
+  model.width = Math.max(360, cum - CFG.GAP + CFG.LEFT);
+  model.height = CFG.TOP + (model.lanes - 1) * CFG.LANE + CFG.H / 2 + 40;
+  return model;
+}
+
+const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const INK = '#1b3a8a';
+
+function labelSVG(label, x, y) {
+  const m = label.match(/^([^_]*)_(.+)$/);
+  const inner = m ? `${esc(m[1])}<tspan dy="5" font-size="12">${esc(m[2])}</tspan>` : esc(label);
+  return `<text x="${x}" y="${y + 5}" text-anchor="middle" font-family="system-ui, Segoe UI, sans-serif" font-size="17" fill="${INK}">${inner}</text>`;
+}
+
+function renderSVG(model) {
+  layout(model);
+  const { nodes, edges, width, height, title } = model;
+  const o = [];
+  o.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`);
+  o.push(`<rect width="100%" height="100%" fill="#fff"/>`);
+  o.push(`<text x="16" y="28" font-family="system-ui, Segoe UI, sans-serif" font-size="15" font-weight="600" fill="#444">${esc(title)}</text>`);
+  // wires
+  for (const [a, b] of edges) {
+    const u = nodes[a], v = nodes[b];
+    let d;
+    if (u.lane === v.lane) d = `M${u.x + u.w / 2} ${u.y} H${v.x - v.w / 2}`;
+    else if (v.type === 'junction') d = `M${u.x + u.w / 2} ${u.y} H${v.x} V${v.y}`;
+    else d = `M${u.x} ${u.y} V${v.y} H${v.x - v.w / 2}`;
+    o.push(`<path d="${d}" fill="none" stroke="${INK}" stroke-width="2" stroke-linejoin="round"/>`);
+  }
+  // nodes
+  const h = CFG.H;
+  for (const n of nodes) {
+    if (n.type === 'junction') { o.push(`<circle cx="${n.x}" cy="${n.y}" r="3.5" fill="${INK}"/>`); continue; }
+    const x0 = n.x - n.w / 2, y0 = n.y - h / 2;
+    if (n.role === 'start') o.push(`<rect x="${x0}" y="${y0}" width="${n.w}" height="${h}" rx="${h / 2}" fill="#eaf0ff" stroke="${INK}" stroke-width="2"/>`);
+    else if (n.role === 'end') o.push(`<polygon points="${x0},${y0} ${x0 + n.w},${y0} ${x0 + n.w},${y0 + h - 14} ${x0 + n.w - 14},${y0 + h} ${x0},${y0 + h}" fill="#eaf0ff" stroke="${INK}" stroke-width="2" stroke-linejoin="round"/>`);
+    else o.push(`<rect x="${x0}" y="${y0}" width="${n.w}" height="${h}" rx="5" fill="#fff" stroke="${INK}" stroke-width="2"/>`);
+    o.push(labelSVG(n.label, n.x, n.y));
+  }
+  o.push('</svg>');
+  return o.join('\n');
+}
+// Node-side check: edges by label so a person can compare them to the sketch without reading ids.
+function edgeList(model) {
+  const nm = n => n.type === 'junction' ? 'J' + n.id : n.label;
+  return model.edges.map(([a, b]) => nm(model.nodes[a]) + ' -> ' + nm(model.nodes[b]));
+}
+// ==CORE-END==
+
+if (typeof document !== 'undefined') {
+  const src = document.getElementById('src'), out = document.getElementById('out'), msgs = document.getElementById('msgs');
+  let lastSVG = '';
+  function update() {
+    const model = parse(src.value);
+    msgs.innerHTML = model.errors.map(e => `<div class="err">${esc(e)}</div>`).join('') +
+                     model.warnings.map(e => `<div class="warn">${esc(e)}</div>`).join('');
+    if (!model.nodes.length) { out.innerHTML = '<div class="empty">Nothing to draw yet.</div>'; lastSVG = ''; return; }
+    lastSVG = renderSVG(model);
+    out.innerHTML = lastSVG;
+    try { localStorage.setItem('shorthand_schematic_src', src.value); } catch (e) {}
+  }
+  function download(name, blob) {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+  src.addEventListener('input', update);
+  src.addEventListener('keydown', e => {
+    if (e.key === 'Tab') { e.preventDefault(); document.execCommand('insertText', false, '   '); }
+  });
+  document.getElementById('ex').onclick = () => { src.value = EXAMPLE; update(); };
+  document.getElementById('svg').onclick = () => { if (lastSVG) download('schematic.svg', new Blob([lastSVG], { type: 'image/svg+xml' })); };
+  document.getElementById('png').onclick = () => {
+    if (!lastSVG) return;
+    const img = new Image(), m = lastSVG.match(/width="(\d+)" height="(\d+)"/), s = 2;
+    img.onload = () => {
+      const c = document.createElement('canvas'); c.width = m[1] * s; c.height = m[2] * s;
+      const g = c.getContext('2d'); g.scale(s, s); g.drawImage(img, 0, 0);
+      c.toBlob(b => download('schematic.png', b));
+    };
+    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(lastSVG);
+  };
+  let saved = ''; try { saved = localStorage.getItem('shorthand_schematic_src') || ''; } catch (e) {}
+  src.value = saved || EXAMPLE;
+  update();
+}
+</script>
+</body>
+</html>
