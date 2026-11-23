@@ -1,6 +1,6 @@
 // node testV3.js -> checks the bottom-box helpers in shorthandSchematicV3.html
 const fs = require('fs'), vm = require('vm'), path = require('path');
-const page = fs.readFileSync(path.join(__dirname, '..', 'shorthandSchematicV3.html'), 'utf8');
+const page = fs.readFileSync(path.join(__dirname, '..', process.env.APP_FILE || 'shorthandSchematicV3.html'), 'utf8');
 const core = page.split('// ==CORE-START==')[1].split('// ==CORE-END==')[0];
 const ctx = {}; vm.createContext(ctx);
 vm.runInContext(core + ';this.A={parse,openWaits,barEdit,barEnter,barBack,edgeList,EXAMPLE,highlightAt}', ctx);
