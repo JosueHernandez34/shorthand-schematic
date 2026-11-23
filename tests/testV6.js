@@ -1,0 +1,38 @@
+// node testV6.js -> the schematic must be named first (shorthandSchematicV6.html)
+const fs = require('fs'), vm = require('vm'), path = require('path');
+const page = fs.readFileSync(path.join(__dirname, '..', 'shorthandSchematicV6.html'), 'utf8');
+const core = page.split('// ==CORE-START==')[1].split('// ==CORE-END==')[0];
+const ctx = {}; vm.createContext(ctx);
+vm.runInContext(core + ';this.A={parse,barEdit,highlightAt,openWaits,EXAMPLE}', ctx);
+const A = ctx.A;
+let fails = 0;
+const ok = (n, c, x) => { console.log((c ? 'PASS ' : 'FAIL ') + n + (x ? '  ' + x : '')); if (!c) fails++; };
+
+let m = A.parse('*a, b\\\n*c\\ s\n*\\');
+ok('elements on the first line: error, nothing drawn', m.errors.length === 1 && m.nodes.length === 0, JSON.stringify(m.errors));
+ok('error says to name the schematic first and why', /name the schematic first/.test(m.errors[0]) && /several elements/.test(m.errors[0]) && m.errors[0].startsWith('Line 1:'));
+m = A.parse('*a, b\\ branch wait\n*T\\\n*c\\ s\n*\\');
+ok('a later valid name line does not rescue it (first line decides)', m.errors.length === 1 && m.nodes.length === 0);
+m = A.parse('*\\\n*c\\ s\n*\\');
+ok('empty name: error', m.errors.length === 1 && /name is empty/.test(m.errors[0]) && m.nodes.length === 0, JSON.stringify(m.errors));
+m = A.parse('*Schematic\\ branch wait\n*c\\ s\n*\\');
+ok('commands on the title line: error', m.errors.length === 1 && /commands after the name/.test(m.errors[0]) && m.nodes.length === 0);
+m = A.parse('*Schematic\\\n*S, A\\ s\n*\\');
+ok('a plain name line is fine', m.errors.length === 0 && m.title === 'Schematic' && m.nodes.length === 2);
+m = A.parse('\n\n*Schematic\\\n*S, A\\ s\n*\\');
+ok('blank lines before the name are fine', m.errors.length === 0 && m.title === 'Schematic');
+m = A.parse('*A\\\n*S, A\\ s\n*\\');
+ok('a one-word first line is the name, not an element', m.title === 'A' && m.nodes.length === 2 && m.errors.length === 0);
+m = A.parse('*Sch', { partial: true });
+ok('name still being typed (no backslash yet) is accepted', m.errors.length === 0 && m.title === 'Sch');
+m = A.parse('*a, b', { partial: true });
+ok('...but elements being typed on line 1 are flagged as they are typed', m.errors.length === 1 && m.nodes.length === 0);
+m = A.parse('');
+ok('empty script: no error, nothing to draw', m.errors.length === 0 && m.nodes.length === 0);
+m = A.parse('garbage\n*Schematic\\\n*S, A\\ s\n*\\');
+ok('a malformed line before the name is reported', m.errors.length === 1 && /expected the form/.test(m.errors[0]) && m.title === 'Schematic');
+ok('highlight and waits do not crash with no name', A.highlightAt('*a, b\\\n*c\\ b w\n', 2).lanes.size === 0 && A.openWaits('*a, b\\\n*c\\ b w\n', 2).length === 0);
+const r = A.barEdit('', 1, '*a, b\\ s', 8);
+ok('typing elements first in the box lands in the script and is flagged', r.text.startsWith('*a, b') && A.parse(r.text).errors.length === 1);
+ok('the example still parses clean', A.parse(A.EXAMPLE).errors.length === 0);
+console.log(fails ? fails + ' FAILED' : 'ALL PASSED');
