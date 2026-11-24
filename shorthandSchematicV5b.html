@@ -152,6 +152,17 @@ const SHAPE_WORDS = { rect: 'rect', rectangle: 'rect', x: 'rect', tri: 'tri', tr
   // Sources are two- and three-letter codes (Josue, 11/24): VS replaced the single V, and the D in DVS and DIS
   // means dependent. Like every code longer than one letter they match in any case.
   vs: 'VS', vsource: 'VS', is: 'IS', isource: 'IS', dvs: 'DVS', dvsource: 'DVS', dis: 'DIS', disource: 'DIS' };
+// The written-out word for each part code (Josue, 11/24: R turns into RES, C into CAP, VS into VOLT_SRC), which is
+// what the typing aid writes and what the legend shows. Each word is also accepted when typed.
+const CODE_WORDS = { R: 'RES', C: 'CAP', L: 'IND', D: 'DIODE', VS: 'VOLT_SRC', IS: 'CURR_SRC', DVS: 'DEP_VOLT_SRC', DIS: 'DEP_CURR_SRC' };
+for (const [k, w] of Object.entries(CODE_WORDS)) SHAPE_WORDS[w.toLowerCase()] = k;
+// MEAS (Josue, 11/24) names a quantity measured over a part: V the voltage across it, I the current through it.
+// Single letters are exact like every letter, the words match in any case. MEAS alone measures the voltage.
+const MEAS_QTY = { V: 'V', I: 'I', voltage: 'V', current: 'I' };
+const measOf = w => w && MEAS_QTY[w.length === 1 ? w : w.toLowerCase()];
+// A source's own quantity is its value, so measuring it would only read the value back (Josue: "I would not ask
+// to measure the voltage over a voltage source").
+const OWN_QTY = { VS: 'V', DVS: 'V', IS: 'I', DIS: 'I' };
 // A single letter is looked up exactly as typed; a word is looked up in lower case.
 const shapeOf = w => SHAPE_WORDS[w.length === 1 ? w : w.toLowerCase()];
 // EE parts: the unit their value is read in. A diode has none, so its value is shown as typed (Josue, 11/24).
@@ -168,6 +179,10 @@ const EE = {
   DIS: { unit: 'A', units: ['A', 'amp', 'amps', 'ampere', 'amperes'] },
   D: { unit: '' },
 };
+// Parts with a direction (Josue, 11/24). Each is drawn negative to positive along the path, so current flows left to
+// right: a voltage source has − on the left and + on the right, a current source's arrow points along the path, a
+// diode's anode is on the left. The word REV in a part's entry (VS REV = 5) mirrors it to positive to negative.
+const DIRECTIONAL = new Set(['VS', 'IS', 'DVS', 'DIS', 'D']);
 // The name of an EE part is drawn small above its symbol. Josue's 11/24 note says a part with no value is drawn
 // with "no label"; CC reads that as no value label and keeps the name so parts stay identifiable. False hides it.
 const SHOW_EE_NAME = true;
@@ -237,10 +252,15 @@ function readSpecifier(specifier, n) {
       const eq = entry.indexOf('=');
       const words = (eq < 0 ? entry : entry.slice(0, eq)).trim().split(/\s+/).filter(Boolean);
       const p = {}; let used = 0;
-      for (const w of words) {
-        const lw = w.toLowerCase();
+      for (let wi = 0; wi < words.length; wi++) {
+        const w = words[wi], lw = w.toLowerCase();
         if (shapeOf(w) && !p.shape) p.shape = shapeOf(w);
         else if (w.length > 1 && COLORS[lw] && !p.color) p.color = lw;
+        else if (lw === 'rev' && !p.rev) p.rev = true;
+        else if (lw === 'meas' && !p.meas) { // MEAS takes the quantity word after it, if there is one
+          p.meas = measOf(words[wi + 1]) || 'V';
+          if (measOf(words[wi + 1])) { wi++; used++; }
+        }
         else break;
         used++;
       }
@@ -296,7 +316,9 @@ function setShape(text, ln, idx, shape, defaults) {
   const si = head.findIndex(w => shapeOf(w));
   // a word written out in capitals is replaced in capitals, so a click keeps the line's style
   const caps = si >= 0 && head[si].length > 1 && head[si] === head[si].toUpperCase();
-  if (si >= 0) head[si] = caps ? shape.toUpperCase() : shape; else head.unshift(shape);
+  // a part is always written as its word (R as RES), as the typing aid would write it
+  const word = CODE_WORDS[shape] || (caps ? shape.toUpperCase() : shape);
+  if (si >= 0) head[si] = word; else head.unshift(word);
   entries[idx] = head.join(' ') + (eq < 0 ? '' : ' ' + e.slice(eq).trim());
   // trailing "auto" entries say nothing, so they are dropped as in v4
   while (entries.length && entries[entries.length - 1].toLowerCase() === 'auto') entries.pop();
@@ -318,15 +340,22 @@ function expandShorthand(c) {
 
 // Typing aid (Josue, 11/24): a small shorthand letter in the specifier is rewritten as its full word in capitals
 // the moment a space, comma or semicolon follows it (s becomes SERIES), so the specifier reads as words. Enter and
-// the hotkey that starts the next list rewrite it too, so the last letter of a line is not left behind. The capital
-// part codes (R, C, VS, DIS...) are already the names engineers read on a schematic, so they stay as typed.
+// the hotkey that starts the next list rewrite it too, so the last letter of a line is not left behind. Part codes
+// are written out the same way (R becomes RES, VS becomes VOLT_SRC; Josue, 11/24), and m becomes MEAS.
 // The word for each letter comes from the tables, so it cannot drift from what the parser accepts.
-const LETTER_WORDS = {};
+const LETTER_WORDS = { m: 'MEAS' };
 for (const [k, v] of Object.entries(SHORT)) LETTER_WORDS[k] = v.toUpperCase();
 for (const [k, v] of Object.entries(SHAPE_WORDS)) {
   if (k.length === 1 && k === k.toLowerCase()) LETTER_WORDS[k] = Object.keys(SHAPE_WORDS).find(w => w.length > 1 && SHAPE_WORDS[w] === v).toUpperCase();
 }
-const EXPANDED = new RegExp('(?:' + [...new Set(Object.values(LETTER_WORDS))].join('|') + '|RETURN\\^\\d+)');
+const EXPANDED = new RegExp('(?:' + [...new Set([...Object.values(LETTER_WORDS), ...Object.values(CODE_WORDS)])].join('|') + '|RETURN\\^\\d+)');
+// The word a typed token is written out as: a small letter, r2, or a part code (a one-letter code exactly as typed,
+// a longer one in any case, like everywhere else).
+function wordFor(tok) {
+  if (/^r\^?\d+$/.test(tok)) return 'RETURN^' + tok.replace(/\D/g, '');
+  if (tok.length === 1) return LETTER_WORDS[tok] || CODE_WORDS[tok];
+  return CODE_WORDS[tok.toUpperCase()];
+}
 
 // True when the text before a spot on a line is in the specifier and not inside a value, where a letter is a
 // shorthand and not part of an element name or of free text such as "proc = b".
@@ -349,9 +378,9 @@ function expandAtCaret(text, caret) {
   if (!trig || !' ,;*\n'.includes(trig)) return null;
   const ls = text.lastIndexOf('\n', caret - 2) + 1;
   const before = text.slice(ls, caret - 1);
-  const m = before.match(/(^|[\s,;])(r\^?\d+|[a-z])$/);
+  const m = before.match(/(^|[\s,;])(r\^?\d+|[A-Za-z]{1,3})$/);
   if (!m) return null;
-  const tok = m[2], word = tok.length > 1 ? 'RETURN^' + tok.replace(/\D/g, '') : LETTER_WORDS[tok];
+  const tok = m[2], word = wordFor(tok);
   if (!word) return null;
   const from = ls + before.length - tok.length;
   if (!inSpecifier(text.slice(ls, from))) return null;
@@ -457,8 +486,19 @@ function parseV2(lines, partial, errors, warnings) {
       const w = ee ? Math.max(64, 10 + Math.max(value ? value.length * 8 : 0, SHOW_EE_NAME ? label.length * 7.5 : 0))
         : Math.max(56, 16 + shown.length * (value ? 8.5 : 10)) * (SHAPE_WIDTH[shape] || 1);
       // ln and idx say which script line and which element of it this block is, so a click can edit that line
+      // REV only means something on a part with a direction; elsewhere it is ignored with a warning, not an error,
+      // because a click that steps a source into a resistor should not break the drawing.
+      if (p.rev && !DIRECTIONAL.has(shape)) warnings.push(`Line ${ln}: REV only reverses ${[...DIRECTIONAL].join(', ')}; ignored on ${label}`);
+      // MEAS is refused on a source's own quantity (an error: it can only read the value back) and ignored on a
+      // flow block (a warning: there is nothing electrical to measure there).
+      let meas = p.meas;
+      if (meas && !ee) { warnings.push(`Line ${ln}: MEAS only measures circuit parts; ignored on ${label}`); meas = undefined; }
+      else if (meas && OWN_QTY[shape] === meas) {
+        errors.push(`Line ${ln}: ${label} is a ${meas === 'V' ? 'voltage' : 'current'} source, so MEAS ${meas} would only read back its own value. Measure ${meas === 'V' ? 'I' : 'V'} instead.`);
+        meas = undefined;
+      }
       const n = addNode({ type: 'el', label, lane: f.lane, shape, ln, idx: i, value, color: p.color,
-        w: Math.round(w) });
+        rev: !!(p.rev && DIRECTIONAL.has(shape)), meas, w: Math.round(w) });
       if (first) { n.role = 'start'; first = false; }
       if (f.cursor) link(f.cursor, n);
       f.cursor = n; lastEl = n;
@@ -742,14 +782,20 @@ function layout(model) {
   nodes.forEach((n, i) => { colW[layer[i]] = Math.max(colW[layer[i]], n.w); });
   const colX = []; let cum = CFG.LEFT;
   for (let l = 0; l < nLayers; l++) { colX[l] = cum + colW[l] / 2; cum += colW[l] + CFG.GAP; }
-  nodes.forEach((n, i) => { n.x = colX[layer[i]]; n.y = CFG.TOP + n.lane * CFG.LANE; });
+  // a MEAS marker sits above a part's name, so the top row moves down to keep it clear of the title
+  const top = CFG.TOP + (nodes.some(n => n.meas && n.lane === 0) ? 16 : 0);
+  nodes.forEach((n, i) => { n.x = colX[layer[i]]; n.y = top + n.lane * CFG.LANE; });
   model.width = Math.max(360, cum - CFG.GAP + CFG.LEFT);
-  model.height = CFG.TOP + (model.lanes - 1) * CFG.LANE + CFG.H / 2 + 40;
+  model.height = top + (model.lanes - 1) * CFG.LANE + CFG.H / 2 + 40;
   return model;
 }
 
 const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-const INK = '#1b3a8a';
+// Black by default (Josue, 11/24): parts, blocks, labels, wires and junctions, the way a schematic is printed.
+// A color word still tints one element. START_FILL is a neutral gray so the start and end shapes stay distinct
+// without a blue tint against the black outlines.
+const INK = '#111111';
+const START_FILL = '#f1f3f5';
 const BAD = '#e5383b'; // same red as the wait bubble in the script, so the two read as one kind of warning
 const HL = { strong: { stroke: '#d9480f', fill: '#ffe8d9', w: 3 }, weak: { stroke: '#d98a1f', fill: '#fff4e0', w: 2.5 } };
 
@@ -796,19 +842,38 @@ function eeSymbolSVG(kind, x0, y, w, stroke, sw) {
     return leads(20) + `<path d="${d}" ${a}/>`;
   }
   // Sources: an independent one is a circle, a dependent one a diamond (the usual schematic convention). A voltage
-  // source carries + on the left and − on the right; a current source an arrow along the path, left to right.
+  // source carries − and +; a current source an arrow along the path, left to right.
   if (kind === 'VS' || kind === 'IS' || kind === 'DVS' || kind === 'DIS') {
     const body = kind[0] === 'D'
       ? `<polygon points="${cx - 15},${y} ${cx},${y - 15} ${cx + 15},${y} ${cx},${y + 15}" fill="#fff" stroke="${stroke}" stroke-width="${sw}" stroke-linejoin="round"/>`
       : `<circle cx="${cx}" cy="${y}" r="14" fill="#fff" stroke="${stroke}" stroke-width="${sw}"/>`;
+    // − on the left, + on the right: negative to positive along the path (REV mirrors it in renderSVG)
     const mark = kind.endsWith('VS')
-      ? `<path d="M${cx - 10} ${y} h7 M${cx - 6.5} ${y - 3.5} v7 M${cx + 3} ${y} h7" ${a} stroke-width="1.6"/>`
+      ? `<path d="M${cx - 10} ${y} h7 M${cx + 3} ${y} h7 M${cx + 6.5} ${y - 3.5} v7" ${a} stroke-width="1.6"/>`
       : `<path d="M${cx - 8} ${y} H${cx + 6} M${cx + 2} ${y - 4} L${cx + 7} ${y} L${cx + 2} ${y + 4}" ${a} stroke-width="1.8"/>`;
     return leads(kind[0] === 'D' ? 15 : 14) + body + mark;
   }
   // D: anode on the left, the bar (cathode) on the right
   return leads(10) + `<polygon points="${cx - 10},${y - 10} ${cx - 10},${y + 10} ${cx + 10},${y}" fill="${stroke}" stroke="${stroke}" stroke-width="${sw}" stroke-linejoin="round"/>` +
     `<path d="M${cx + 10} ${y - 10} V${y + 10}" ${a}/>`;
+}
+
+// The MEAS marker, above the part's name. Its direction follows the current: left to right along the path, or
+// right to left on a reversed part. V is drawn + ... − with + where the current enters (the passive sign convention);
+// I is an arrow the way the current flows. The text is the quantity until a solver gives n.measValue (Josue, 11/24:
+// "marker now, number later"), then it is the reading, for example +5 V−.
+function measSVG(n, x0, ink) {
+  const y = n.y - 42, dir = n.rev ? -1 : 1, x1 = x0 + n.w;
+  const t = (s, x, size) => `<text x="${x}" y="${y + 4}" text-anchor="middle" font-family="system-ui, Segoe UI, sans-serif" font-size="${size || 12}" fill="${ink}">${esc(s)}</text>`;
+  const shown = n.measValue || n.meas;
+  if (n.meas === 'V') {
+    const [l, r] = dir > 0 ? ['+', '−'] : ['−', '+'];
+    return `<g class="meas">${t(l, x0 + 7, 14)}${t(shown, n.x)}${t(r, x1 - 7, 14)}</g>`;
+  }
+  // I: a short arrow left of the label, pointing the way the current flows
+  const ax = n.x - 14, half = 9;
+  const tip = ax + dir * half, tail = ax - dir * half;
+  return `<g class="meas"><path d="M${tail} ${y} H${tip} M${tip - dir * 4} ${y - 3.5} L${tip} ${y} L${tip - dir * 4} ${y + 3.5}" fill="none" stroke="${ink}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>${t(shown, n.x + 10)}</g>`;
 }
 
 // hl is the lane to strength map from highlightAt; omit it for a clean drawing (downloads).
@@ -848,16 +913,20 @@ function renderSVG(model, hl, interactive) {
     const x0 = n.x - n.w / 2, y0 = n.y - h / 2;
     // A written shape wins over the start/end look; wires meet every shape at its left and right middle.
     const kind = n.shape ? (DRAW_AS[n.shape] || n.shape) : (n.role === 'start' ? 'pill' : n.role === 'end' ? 'flag' : 'rect');
-    const fill = st ? st.fill : col ? col.fill : (kind === 'pill' || kind === 'flag' ? '#eaf0ff' : '#fff');
+    const fill = st ? st.fill : col ? col.fill : (kind === 'pill' || kind === 'flag' ? START_FILL : '#fff');
     if (interactive) o.push(`<g class="blk" data-ln="${n.ln}" data-idx="${n.idx}" style="cursor:pointer"><title>Click to change ${EE[n.shape] ? 'part' : 'shape'}</title>`);
     if (EE[n.shape]) {
       // A part has no body to fill, so a highlight shows as a soft patch behind it; a color tints the lines only.
       if (st) o.push(`<rect x="${x0}" y="${y0}" width="${n.w}" height="${h}" rx="6" fill="${st.fill}"/>`);
       // an invisible slot so a click anywhere on the part counts, not only on its thin lines
       else if (interactive) o.push(`<rect x="${x0}" y="${y0}" width="${n.w}" height="${h}" fill="#fff" fill-opacity="0"/>`);
-      o.push(eeSymbolSVG(n.shape, x0, n.y, n.w, stroke, sw));
+      // REV mirrors the symbol about its own center, which swaps + and −, turns the arrow and the diode around,
+      // and leaves the leads where the wires meet them
+      const sym = eeSymbolSVG(n.shape, x0, n.y, n.w, stroke, sw);
+      o.push(n.rev ? `<g transform="matrix(-1 0 0 1 ${2 * n.x} 0)" class="rev">${sym}</g>` : sym);
       if (SHOW_EE_NAME) o.push(labelSVG(n.label, n.x, n.y - 24, ink, 13));
       if (n.value) o.push(valueSVG(n.value, n.x, n.y + 25, ink));
+      if (n.meas) o.push(measSVG(n, x0, ink));
       if (n.badEnd) o.push(`<path d="M${x0 + 4} ${y0 + 4} L${x0 + n.w - 4} ${y0 + h - 4} M${x0 + n.w - 4} ${y0 + 4} L${x0 + 4} ${y0 + h - 4}" stroke="${BAD}" stroke-width="3.5" stroke-linecap="round" class="badx"/>`);
       if (interactive) o.push('</g>');
       continue;
@@ -1075,7 +1144,7 @@ if (typeof document !== 'undefined') {
   // Shorthand letter for a command word, read from SHORT so the legend follows the table.
   const sh = w => Object.keys(SHORT).find(k => SHORT[k] === w);
   const shLetter = v => Object.keys(SHAPE_WORDS).find(k => k.length === 1 && SHAPE_WORDS[k] === v);
-  const miniShape = kind => swatch(shapeSVG(kind, 6, 3, 44, 20, kind === 'pill' || kind === 'flag' ? '#eaf0ff' : '#fff', INK, 2), 56);
+  const miniShape = kind => swatch(shapeSVG(kind, 6, 3, 44, 20, kind === 'pill' || kind === 'flag' ? START_FILL : '#fff', INK, 2), 56);
   const letterCell = w => shLetter(w) ? code(shLetter(w)) : '&mdash;';
   const shapeRows = [['rect', 'rect', 'Rectangle'], ['tri', 'tri', 'Triangle'], ['circ', 'circ', 'Circle'], ['dia', 'dia', 'Diamond (plain)'],
     ['proc', 'rect', 'Process block'], ['dec', 'dia', 'Decision: a diamond that shows its value; a branch leaving it is labeled no, the path that carries on yes'],
@@ -1094,7 +1163,7 @@ if (typeof document !== 'undefined') {
     row('Start', 'The first element is always the start; there is no start word.') +
     row(code('*Name\\'), 'First line, required before anything else: the diagram name, on its own (no commas, no commands). Elements such as <code>*A, B\\</code> on the first line are an error and nothing is drawn. The last line <code>*\\</code> ends the diagram.') +
     row('One line', 'Each <code>*</code> after a finished list starts a new line, tabbed automatically. Typed spaces are ignored.') +
-    row('Letters to words', 'A small shorthand letter in the specifier is written out in capitals as soon as you type a space, comma or semicolon after it (or press Enter, or start the next list): <code>s</code> becomes <code>SERIES</code>, <code>t</code> becomes <code>TRI</code>, <code>r2</code> becomes <code>RETURN^2</code>. Backspace right after it takes the whole word back; Backspace at the end of any such word deletes the whole word. Letters in element names and in values are left alone, and so are the capital part codes (<code>R</code>, <code>VS</code>, ...). A pasted script is kept as pasted.') +
+    row('Letters to words', 'A small shorthand letter in the specifier is written out in capitals as soon as you type a space, comma or semicolon after it (or press Enter, or start the next list): <code>s</code> becomes <code>SERIES</code>, <code>t</code> becomes <code>TRI</code>, <code>r2</code> becomes <code>RETURN^2</code>. Backspace right after it takes the whole word back; Backspace at the end of any such word deletes the whole word. Part codes are written out too: <code>R</code> becomes <code>RES</code>, <code>VS</code> (or <code>vs</code>) becomes <code>VOLT_SRC</code> (see Circuit parts), and <code>m</code> becomes <code>MEAS</code>. Letters in element names and in values are left alone. A pasted script is kept as pasted.') +
     '</table><h3>Current line box and script panel</h3><table>' +
     row('Current line', 'The box at the bottom edits the current script line (same hotkey and clean-up as the script). Enter starts a new line, Backspace on an empty box goes back a line, Up and Down move between lines.') +
     row('Open waits', 'Red chips beside the box list every wait still open (the innermost is darker), so you can watch the diagram with the script hidden.') +
@@ -1115,10 +1184,12 @@ if (typeof document !== 'undefined') {
     '<h3>Circuit parts: drawn on the wire, in the same diagram as the blocks</h3><table>' +
     '<tr><th>Code</th><th>Word</th><th>Part, and the unit its value is read in</th></tr>' +
     // the word column is held narrow so the symbol and its description get the room
-    // the word is the longer name for a code, so a code's own lower-case spelling (vs for VS) is skipped
-    Object.keys(EE).map(k => `<tr><td>${code(k)}</td><td style="width:1%">${code(Object.keys(SHAPE_WORDS).find(w => w.length > 1 && w !== k.toLowerCase() && SHAPE_WORDS[w] === k))}</td><td>${swatch(eeSymbolSVG(k, 2, 13, 60, INK, 2), 64)} ${{ R: 'Resistor, ohms (Ω)', C: 'Capacitor, farads (F)', L: 'Inductor, henries (H)', VS: 'Voltage source, volts (V); + on the left', IS: 'Current source, amps (A); the arrow points along the path', DVS: 'Dependent voltage source, volts (V); an expression is shown as typed, in brackets when it has * (DVS = [2*Vx]), since a * otherwise starts a new line', DIS: 'Dependent current source, amps (A); an expression is shown as typed, in brackets when it has * (DIS = [0.5*Ix])', D: 'Diode, anode on the left; no unit, the value is shown as typed' }[k]}</td></tr>`).join('') +
+    // the word column is what the typing aid writes the code out as
+    Object.keys(EE).map(k => `<tr><td>${code(k)}</td><td style="width:1%">${code(CODE_WORDS[k])}</td><td>${swatch(eeSymbolSVG(k, 2, 13, 60, INK, 2), 64)} ${{ R: 'Resistor, ohms (Ω)', C: 'Capacitor, farads (F)', L: 'Inductor, henries (H)', VS: 'Voltage source, volts (V); − on the left, + on the right', IS: 'Current source, amps (A); the arrow points along the path, left to right', DVS: 'Dependent voltage source, volts (V); an expression is shown as typed, in brackets when it has * (DVS = [2*Vx]), since a * otherwise starts a new line', DIS: 'Dependent current source, amps (A); an expression is shown as typed, in brackets when it has * (DIS = [0.5*Ix])', D: 'Diode, anode on the left; no unit, the value is shown as typed' }[k]}</td></tr>`).join('') +
     wide('Values', '<code>*R1\\ R = 4.7k</code> shows 4.7 kΩ under the resistor; <code>*C1\\ C = 10u</code> shows 10 µF. The unit may be typed too: <code>4.7kΩ</code>, <code>4.7k ohm</code>, <code>10uF</code>. A power works: <code>4.7e3</code> shows 4.7 kΩ. Without <code>=</code> the part is drawn with no value. A value that is not a number is shown as typed.') +
     wide('Prefixes', '<code>p</code> pico, <code>n</code> nano, <code>u</code> or <code>µ</code> micro, <code>m</code> milli, <code>k</code> kilo, <code>M</code> mega, <code>G</code> giga.') +
+    wide('Direction', 'Parts with a direction (<code>VS</code> <code>IS</code> <code>DVS</code> <code>DIS</code> <code>D</code>) are drawn negative to positive along the path, so current flows left to right. Write <code>REV</code> in the entry of a part to reverse it: <code>*V1\\ VS REV = 5</code> is a 5 V source drawn positive to negative. On other parts <code>REV</code> is ignored with a warning.') +
+    wide('Measure', 'Write <code>MEAS V</code> (shorthand <code>m</code>) in the entry of a part to mark the voltage across it, <code>MEAS I</code> for the current through it; <code>MEAS</code> alone means V. <code>*R_1\\ RES = 4.7k; MEAS V</code> draws <code>+ V &minus;</code> over the resistor, + where the current enters (left, or right on a part marked <code>REV</code>); <code>MEAS I</code> draws an arrow the way the current flows. The number is shown once the app can solve circuits (a later version). A source cannot measure its own quantity (no <code>MEAS V</code> on a voltage source, no <code>MEAS I</code> on a current source): that is an error. On a flow block <code>MEAS</code> is ignored with a warning.') +
     wide('Several parts', '<code>*R1, C1\\ R = 4.7k, C = 10u; red, blue</code>: one entry per part, as for blocks.') +
     wide('Letter case', 'Single letters are case-sensitive: capitals are circuit parts (<code>R C L D</code>), small letters are shapes and commands (<code>c</code> circle, <code>d</code> decision, <code>r</code> return). So <code>C</code> is a capacitor and <code>c</code> a circle. Codes and words longer than one letter match in any case (<code>VS</code> or <code>vs</code>, <code>Branch</code>, <code>PROC</code>, <code>Resistor</code>).') +
     wide('Click a part', `Steps through the parts (${Object.keys(EE).join(', ')}) and writes the code into the script; the value is kept.`) +
@@ -1128,9 +1199,9 @@ if (typeof document !== 'undefined') {
     row('Click a block', 'Steps through its shapes and writes the word into the script (a drag never counts as a click).') +
     '</table><h3>Rejoining</h3><p>A pending return rejoins after the last element of the next line on its target level. When several are pending for the same level, they rejoin in the order the branches were created.</p>' +
     '<h3>Drawing</h3><table>' +
-    row(swatch(`<rect x="3" y="3" width="50" height="20" rx="10" fill="#eaf0ff" stroke="${INK}" stroke-width="2"/><text x="28" y="18" text-anchor="middle" font-size="12" font-family="system-ui,sans-serif" fill="${INK}">S</text>`), 'Start: the first element.') +
+    row(swatch(`<rect x="3" y="3" width="50" height="20" rx="10" fill="${START_FILL}" stroke="${INK}" stroke-width="2"/><text x="28" y="18" text-anchor="middle" font-size="12" font-family="system-ui,sans-serif" fill="${INK}">S</text>`), 'Start: the first element.') +
     row(swatch(box('rx="3" fill="#fff" stroke="' + INK + '"', 'A')), 'Element in series.') +
-    row(swatch(`<polygon points="3,3 53,3 53,13 43,23 3,23" fill="#eaf0ff" stroke="${INK}" stroke-width="2"/><text x="26" y="18" text-anchor="middle" font-size="12" font-family="system-ui,sans-serif" fill="${INK}">E</text>`), 'End: the line marked <code>end</code>.') +
+    row(swatch(`<polygon points="3,3 53,3 53,13 43,23 3,23" fill="${START_FILL}" stroke="${INK}" stroke-width="2"/><text x="26" y="18" text-anchor="middle" font-size="12" font-family="system-ui,sans-serif" fill="${INK}">E</text>`), 'End: the line marked <code>end</code>.') +
     row(swatch(`<circle cx="28" cy="13" r="3.5" fill="${INK}"/>`), 'Junction where a branch leaves or rejoins.') +
     '</table><h3>Highlights while you type</h3><table>' +
     row(swatch(box(`rx="3" fill="${HL.strong.fill}" stroke="${HL.strong.stroke}"`, 'A')), 'Orange: the branch the current line closes or resolves (the oldest-created one).') +
