@@ -70,11 +70,21 @@ const rc = '*V1, R1, C1\\ AC_VOLT_SRC = 10 cos(1000t), RES = 1k, CAP = 1u; , MEA
 m = P(rc);
 ok('RC: V_R = 7.07 V ∠ 45°, V_C = 7.07 V ∠ −45°', byLabel(m, 'R1').measValue === '7.07 V ∠ 45°' && byLabel(m, 'C1').measValue === '7.07 V ∠ −45°', JSON.stringify([byLabel(m, 'R1').measValue, byLabel(m, 'C1').measValue, m.warnings]));
 ok('RC: the phasor numbers', near(byLabel(m, 'C1').measAC[0].re, 5) && near(byLabel(m, 'C1').measAC[0].im, -5) && byLabel(m, 'C1').measNum === 0);
-A.SETTINGS.acForm = 'rectangular';
-ok('rectangular form', byLabel(P(rc), 'C1').measValue === '5 − j5 V', byLabel(P(rc), 'C1').measValue);
-A.SETTINGS.acForm = 'sinusoidal';
-ok('sinusoidal form', byLabel(P(rc), 'C1').measValue === '7.07 cos(1000t − 45°) V', byLabel(P(rc), 'C1').measValue);
-A.SETTINGS.acForm = 'polar';
+// the form is written after MEAS (Josue, 11/24): POLE, RECT or SINE, each marker its own, polar when none is given
+const rcForm = f => byLabel(P(`*V1, R1, C1\\ AC_VOLT_SRC = 10 cos(1000t), RES = 1k, CAP = 1u; , , MEAS V ${f}`), 'C1').measValue;
+ok('MEAS V RECT', rcForm('RECT') === '5 − j5 V', rcForm('RECT'));
+ok('MEAS V SINE', rcForm('SINE') === '7.07 cos(1000t − 45°) V', rcForm('SINE'));
+ok('MEAS V POLE', rcForm('POLE') === '7.07 V ∠ −45°', rcForm('POLE'));
+ok('the form words match in any case and may come before the quantity', rcForm('rect') === '5 − j5 V' && byLabel(P('*V1, R1, C1\\ AC_VOLT_SRC = 10 cos(1000t), RES = 1k, CAP = 1u; , , MEAS SINE V'), 'C1').measValue === '7.07 cos(1000t − 45°) V');
+m = P('*V1, R1, C1\\ AC_VOLT_SRC = 10 cos(1000t), RES = 1k, CAP = 1u; , MEAS I RECT, MEAS SINE');
+ok('each marker keeps its own form; MEAS SINE alone is V', byLabel(m, 'R1').measValue === '5 + j5 mA' && byLabel(m, 'C1').meas === 'V' && byLabel(m, 'C1').measValue === '7.07 cos(1000t − 45°) V', JSON.stringify([byLabel(m, 'R1').measValue, byLabel(m, 'C1').measValue]));
+ok('a form does not change a DC reading', read('*V1, R1\\ VOLT_SRC = 5, RES = 4.7k; , MEAS V RECT', 'R1') === 5 && byLabel(P('*V1, R1\\ VOLT_SRC = 5, RES = 4.7k; , MEAS V RECT'), 'R1').measValue === '5 V');
+ok('the Settings page no longer holds an AC form', !('acForm' in A.SETTINGS));
+// the rect shape word is gone: a box is the default, so an old script still draws a box and warns
+m = P('*A, B, C\\ tri, rect, x');
+ok('rect and x are no longer shapes: a box, with a warning each', !byLabel(m, 'B').shape && !byLabel(m, 'C').shape && m.warnings.filter(w => /no longer a shape/.test(w)).length === 2, JSON.stringify(m.warnings));
+ok('the v4 form with rect keeps its behavior', P('*S, A\\ series\n*B, C\\ tri, rect, branch wait\n*D\\ return').branches.length === 1 && byLabel(P('*S, A\\ series\n*B, C\\ tri, rect, branch wait\n*D\\ return'), 'B').shape === 'tri');
+ok('a click cycles back to the plain box, not rect', A.nextShape({ shape: 'io' }) === 'auto' && A.nextShape({ shape: 'io', role: 'start' }) === 'proc' && A.nextShape({}) === 'tri');
 // RL with the three-number form: XL = 1000·1 H = 1 kΩ, so V_L = 10·j1k/(1k + j1k) = 5 + j5 V and I = 5 − j5 mA
 m = P('*V1, R1, L1\\ AC_VOLT_SRC = [10, 1000, 0], RES = 1k, IND = 1; , , MEAS V\n*\\');
 ok('RL: V_L = 7.07 V ∠ 45°', byLabel(m, 'L1').measValue === '7.07 V ∠ 45°', byLabel(m, 'L1').measValue);
@@ -87,11 +97,8 @@ ok('a dependent source follows an AC reading', byLabel(P('*V1, R1, Rx, E1, R2\\ 
 // superposition: DC and AC in one loop add; each omega is its own term
 m = P('*V1, V2, R1\\ VOLT_SRC = 2, AC_VOLT_SRC = 3 cos(1000t), RES = 1k; , , MEAS V');
 ok('DC plus AC: both terms, the phasor names its omega', byLabel(m, 'R1').measValue === '2 V + 3 V ∠ 0° @ 1000 rad/s' && near(byLabel(m, 'R1').measNum, 2), byLabel(m, 'R1').measValue);
-A.SETTINGS.acForm = 'rectangular';
-ok('DC plus AC, rectangular: the phasor is bracketed', byLabel(P('*V1, V2, R1\\ VOLT_SRC = 2, AC_VOLT_SRC = 3 cos(1000t + 90), RES = 1k; , , MEAS V'), 'R1').measValue === '2 V + (0 + j3 V) @ 1000 rad/s', byLabel(P('*V1, V2, R1\\ VOLT_SRC = 2, AC_VOLT_SRC = 3 cos(1000t + 90), RES = 1k; , , MEAS V'), 'R1').measValue);
-A.SETTINGS.acForm = 'sinusoidal';
-ok('DC plus AC, sinusoidal', byLabel(P('*V1, V2, R1\\ VOLT_SRC = 2, AC_VOLT_SRC = 3 cos(1000t), RES = 1k; , , MEAS V'), 'R1').measValue === '2 V + 3 cos(1000t) V');
-A.SETTINGS.acForm = 'polar';
+ok('DC plus AC, RECT: the phasor is bracketed', byLabel(P('*V1, V2, R1\\ VOLT_SRC = 2, AC_VOLT_SRC = 3 cos(1000t + 90), RES = 1k; , , MEAS V RECT'), 'R1').measValue === '2 V + (0 + j3 V) @ 1000 rad/s', byLabel(P('*V1, V2, R1\\ VOLT_SRC = 2, AC_VOLT_SRC = 3 cos(1000t + 90), RES = 1k; , , MEAS V RECT'), 'R1').measValue);
+ok('DC plus AC, SINE', byLabel(P('*V1, V2, R1\\ VOLT_SRC = 2, AC_VOLT_SRC = 3 cos(1000t), RES = 1k; , , MEAS V SINE'), 'R1').measValue === '2 V + 3 cos(1000t) V');
 m = P('*V1, V2, R1, C1\\ AC_VOLT_SRC = cos(1000t), AC_VOLT_SRC = cos(2000t), RES = 1k, CAP = 1u; , , , MEAS V');
 const cterms = byLabel(m, 'C1').measAC;
 // at 1000 the RC is the 45° case above (0.707 ∠ −45°); at 2000 Xc is 500 Ω, so V_C = 1·(−j500)/(1k − j500) = 0.2 − j0.4

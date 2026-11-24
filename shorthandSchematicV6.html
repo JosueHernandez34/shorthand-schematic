@@ -68,7 +68,6 @@
   .setBody legend { font-weight:600; padding:0 4px; }
   .setBody label { display:block; padding:4px 0; cursor:pointer; }
   .setBody .hint { margin:2px 0 6px; color:var(--muted); }
-  .setBody .eg { color:var(--muted); font-family:ui-monospace, Consolas, Menlo, monospace; font-size:12px; margin-left:6px; }
   #helpDlg { width:min(640px, 94vw); max-height:86vh; overflow:auto; padding:0; border:1px solid var(--line); border-radius:10px; background:var(--panel); color:var(--ink); }
   #helpDlg::backdrop { background:rgba(27,36,48,.45); }
   #helpDlg .hh { position:sticky; top:0; display:flex; align-items:center; justify-content:space-between; padding:12px 18px; background:var(--panel); border-bottom:1px solid var(--line); }
@@ -107,13 +106,6 @@
       <p class="hint">Where a circuit's return path to ground is drawn.</p>
       <label><input type="radio" name="groundPos" value="bottom"> Bottom (default)</label>
       <label><input type="radio" name="groundPos" value="top"> Top</label>
-    </fieldset>
-    <fieldset>
-      <legend>AC results</legend>
-      <p class="hint">How an AC voltage or current is written on a MEAS marker. DC results are plain numbers in every form. When a reading has several terms (DC plus AC, or two omegas), polar and rectangular name each term's omega.</p>
-      <label><input type="radio" name="acForm" value="polar"> Polar <span class="eg" data-form="polar"></span></label>
-      <label><input type="radio" name="acForm" value="rectangular"> Rectangular <span class="eg" data-form="rectangular"></span></label>
-      <label><input type="radio" name="acForm" value="sinusoidal"> Sinusoidal <span class="eg" data-form="sinusoidal"></span></label>
     </fieldset>
   </form>
 </dialog>
@@ -176,7 +168,9 @@ function parse(src, opts) {
 // EE parts (V5b) join the same table, so a line can mix flow blocks and circuit parts (no segregation, Josue 11/24).
 // Their letters are uppercase and the shape letters lowercase; only single letters are case-sensitive (Josue, 11/24),
 // so C is a capacitor and c a circle, D a diode and d a decision. Full words match in any case.
-const SHAPE_WORDS = { rect: 'rect', rectangle: 'rect', x: 'rect', tri: 'tri', triangle: 'tri', t: 'tri',
+// V6: the rect shape word is gone (Josue, 11/24): a plain box is already the default, and RECT now names the
+// rectangular form after MEAS. Old scripts still read; the word is passed over with a warning (see OLD_RECT).
+const SHAPE_WORDS = { tri: 'tri', triangle: 'tri', t: 'tri',
   circ: 'circ', circle: 'circ', c: 'circ', dia: 'dia', diamond: 'dia', auto: 'auto',
   proc: 'proc', process: 'proc', p: 'proc', dec: 'dec', decision: 'dec', d: 'dec', io: 'io', i: 'io',
   R: 'R', resistor: 'R', C: 'C', capacitor: 'C', L: 'L', inductor: 'L', D: 'D', diode: 'D',
@@ -195,6 +189,13 @@ for (const [k, w] of Object.entries(CODE_WORDS)) SHAPE_WORDS[w.toLowerCase()] = 
 // Single letters are exact like every letter, the words match in any case. MEAS alone measures the voltage.
 const MEAS_QTY = { V: 'V', I: 'I', voltage: 'V', current: 'I' };
 const measOf = w => w && MEAS_QTY[w.length === 1 ? w : w.toLowerCase()];
+// How a MEAS marker writes an AC reading (Josue, 11/24): POLE, RECT or SINE after MEAS, in any case, for example
+// MEAS V RECT. Each marker picks its own form, so there is no app-wide setting; polar is used when none is given.
+const MEAS_FORM = { pole: 'polar', polar: 'polar', rect: 'rectangular', rectangular: 'rectangular', sine: 'sinusoidal', sinusoidal: 'sinusoidal' };
+const formOf = w => w && MEAS_FORM[w.toLowerCase()];
+// The old rectangle words (rect, rectangle, and the letter x exactly). They are accepted so v4 to V5b scripts still
+// draw, since a box is what they meant anyway, but they warn because RECT now means something else.
+const OLD_RECT = w => w === 'x' || ['rect', 'rectangle'].includes(w.toLowerCase());
 // A source's own quantity is its value, so measuring it would only read the value back (Josue: "I would not ask
 // to measure the voltage over a voltage source").
 const OWN_QTY = { VS: 'V', DVS: 'V', IS: 'I', DIS: 'I', VAC: 'V', IAC: 'I' };
@@ -221,9 +222,8 @@ const EE = {
   GND: { unit: '' },
 };
 // Settings the person picks on the Settings page (V6). The core reads them from here so node checks can set them too.
-// groundPos: where the ground return is drawn. acForm: how an AC result is written (polar, rectangular or
-// sinusoidal); DC results are plain numbers whatever the form.
-const SETTINGS = { groundPos: 'bottom', acForm: 'polar' };
+// groundPos: where the ground return is drawn. (The AC form moved to each MEAS marker: POLE, RECT or SINE.)
+const SETTINGS = { groundPos: 'bottom' };
 // Parts with a direction (Josue, 11/24). Each is drawn negative to positive along the path, so current flows left to
 // right: a voltage source has − on the left and + on the right, a current source's arrow points along the path, a
 // diode's anode is on the left. The word REV in a part's entry (VS REV = 5) mirrors it to positive to negative.
@@ -355,7 +355,7 @@ function splitTop(s, sep) {
 // The specifier is semicolon groups; in each group the commas give one entry per element, in the order of the
 // names. An entry holds bare words (shape, color) and an optional "= value". Group order does not matter because
 // each entry is recognized by its words. The first word that is not a property starts the behavior part, and
-// everything after it in that group is behavior or comment: that keeps the v4 form "tri, rect, branch wait"
+// everything after it in that group is behavior or comment: that keeps the v4 form "tri, circ, branch wait"
 // and the v4 rule that a shape word after a command is not a shape.
 function readSpecifier(specifier, n) {
   const props = Array.from({ length: n }, () => ({}));
@@ -374,10 +374,17 @@ function readSpecifier(specifier, n) {
         if (shapeOf(w) && !p.shape) p.shape = shapeOf(w);
         else if (w.length > 1 && COLORS[lw] && !p.color) p.color = lw;
         else if (lw === 'rev' && !p.rev) p.rev = true;
-        else if (lw === 'meas' && !p.meas) { // MEAS takes the quantity word after it, if there is one
-          p.meas = measOf(words[wi + 1]) || 'V';
-          if (measOf(words[wi + 1])) { wi++; used++; }
+        else if (lw === 'meas' && !p.meas) { // MEAS takes a quantity and a form after it, in either order
+          let q = null;
+          for (let k = 0, nx; k < 2 && (nx = words[wi + 1]); k++) {
+            if (measOf(nx) && !q) q = measOf(nx);
+            else if (formOf(nx) && !p.measForm) p.measForm = formOf(nx);
+            else break;
+            wi++; used++;
+          }
+          p.meas = q || 'V';
         }
+        else if (OLD_RECT(w) && !p.shape && !p.oldRect) p.oldRect = w;
         else break;
         used++;
       }
@@ -397,14 +404,15 @@ const unbracket = v => /^\[[\s\S]*\]$/.test(v) ? v.slice(1, -1).trim() : v;
 function nextShape(n) {
   // GND is a connection, not a part with a value, so the click cycle leaves it out
   if (EE[n.shape]) { const ee = Object.keys(EE).filter(k => k !== 'GND'); return ee[(ee.indexOf(n.shape) + 1) % ee.length]; }
-  const seq = n.role ? ['auto', 'tri', 'circ', 'dia', 'io', 'rect'] : ['rect', 'tri', 'circ', 'dia', 'io'];
-  const at = seq.indexOf(n.shape || (n.role ? 'auto' : 'rect'));
+  // auto is the plain box for a middle block; a start or end block reaches a box through proc, with no rect word
+  const seq = n.role ? ['auto', 'tri', 'circ', 'dia', 'io', 'proc'] : ['auto', 'tri', 'circ', 'dia', 'io'];
+  const at = seq.indexOf(n.shape || 'auto');
   return seq[(at + 1) % seq.length]; // proc and dec are not in the cycle, so a click on one goes to the first shape
 }
 
 // Write one element's shape into its script line, keeping its color and value. The edit goes into the first
 // group that holds element entries; earlier elements without an entry get a filler (defaults[i]: "auto" for
-// start/end blocks, "rect" otherwise) so the entries stay in element order. With no such group, a new one is
+// every block, the default look) so the entries stay in element order. With no such group, a new one is
 // written first in the v4 form (shapes, then the rest) or, if the line already uses groups, as its own group.
 function setShape(text, ln, idx, shape, defaults) {
   const lines = text.split('\n');
@@ -412,7 +420,7 @@ function setShape(text, ln, idx, shape, defaults) {
   if (!m) return text;
   const groups = splitTop(m[3], ';');
   const isProp = e => { const r = readSpecifier(e, 1); return !r.rest.trim() && Object.keys(r.props[0]).length > 0; };
-  const fill = i => (defaults && defaults[i]) || 'rect';
+  const fill = i => (defaults && defaults[i]) || 'auto';
   let gi = groups.findIndex(g => isProp(splitTop(g, ',')[0].trim()));
   let entries, tail;
   if (gi < 0) {
@@ -426,7 +434,9 @@ function setShape(text, ln, idx, shape, defaults) {
     entries = cut < 0 ? all : all.slice(0, cut);
     tail = cut < 0 ? [] : all.slice(cut);
   }
-  while (entries.length <= idx) entries.push(fill(entries.length));
+  // fillers go before the element only; its own entry starts empty, so the new word is never stacked on a filler
+  while (entries.length < idx) entries.push(fill(entries.length));
+  if (entries.length === idx) entries.push('');
   // swap the entry's shape word, or put one in front of its color and value
   const e = entries[idx];
   const eq = e.indexOf('=');
@@ -609,6 +619,7 @@ function parseV2(lines, partial, errors, warnings) {
       if (p.rev && !DIRECTIONAL.has(shape)) warnings.push(`Line ${ln}: REV only reverses ${[...DIRECTIONAL].join(', ')}; ignored on ${label}`);
       // MEAS is refused on a source's own quantity (an error: it can only read the value back) and ignored on a
       // flow block (a warning: there is nothing electrical to measure there).
+      if (p.oldRect) warnings.push(`Line ${ln}: ${p.oldRect} is no longer a shape (a plain box is the default, and RECT now means the rectangular form after MEAS); ignored on ${label}`);
       let meas = p.meas;
       if (meas && !ee) { warnings.push(`Line ${ln}: MEAS only measures circuit parts; ignored on ${label}`); meas = undefined; }
       else if (meas && OWN_QTY[shape] === meas) {
@@ -616,7 +627,7 @@ function parseV2(lines, partial, errors, warnings) {
         meas = undefined;
       }
       const n = addNode({ type: 'el', label, lane: f.lane, shape, ln, idx: i, value, color: p.color,
-        rev: !!(p.rev && DIRECTIONAL.has(shape)), meas, raw: p.value, w: Math.round(w) });
+        rev: !!(p.rev && DIRECTIONAL.has(shape)), meas, measForm: p.measForm, raw: p.value, w: Math.round(w) });
       if (first) { n.role = 'start'; first = false; }
       if (f.cursor) link(f.cursor, n);
       f.cursor = n; lastEl = n;
@@ -892,7 +903,7 @@ function simulate(model) {
     const unit = p.n.meas === 'V' ? 'V' : 'A', dc = list.find(t => t.w === 0);
     p.n.measNum = dc ? dc.re : 0;
     p.n.measAC = list.filter(t => t.w > 0).map(t => ({ w: t.w, re: t.re, im: t.im }));
-    p.n.measValue = fmtReading(list, unit, SETTINGS.acForm);
+    p.n.measValue = fmtReading(list, unit, p.n.measForm || 'polar');
     // the reading sits between + and − (or after the arrow), so the part widens to keep them apart
     p.n.w = Math.max(p.n.w, Math.round(p.n.measValue.length * 7 + 40));
     results.push([p.n.label, p.n.meas, p.n.measNum, ...p.n.measAC.map(t => [t.w, t.re, t.im])]);
@@ -1548,18 +1559,18 @@ if (typeof document !== 'undefined') {
   const shLetter = v => Object.keys(SHAPE_WORDS).find(k => k.length === 1 && SHAPE_WORDS[k] === v);
   const miniShape = kind => swatch(shapeSVG(kind, 6, 3, 44, 20, kind === 'pill' || kind === 'flag' ? START_FILL : '#fff', INK, 2), 56);
   const letterCell = w => shLetter(w) ? code(shLetter(w)) : '&mdash;';
-  const shapeRows = [['rect', 'rect', 'Rectangle'], ['tri', 'tri', 'Triangle'], ['circ', 'circ', 'Circle'], ['dia', 'dia', 'Diamond (plain)'],
+  const shapeRows = [['tri', 'tri', 'Triangle'], ['circ', 'circ', 'Circle'], ['dia', 'dia', 'Diamond (plain)'],
     ['proc', 'rect', 'Process block'], ['dec', 'dia', 'Decision: a diamond that shows its value; a branch leaving it is labeled no, the path that carries on yes'],
     ['io', 'io', 'Input or output (parallelogram)']]
     .map(([w, k, name]) => `<tr><td>${code(w)}</td><td>${letterCell(w)}</td><td>${miniShape(k)} ${name}</td></tr>`).join('') +
-    `<tr><td>${code('auto')}</td><td>&mdash;</td><td>${miniShape('pill')} ${miniShape('flag')} Default: pill for the start, flag for the end, box otherwise</td></tr>`;
+    `<tr><td>${code('auto')}</td><td>&mdash;</td><td>${miniShape('pill')} ${miniShape('flag')} Default: pill for the start, flag for the end, box otherwise. There is no rect word: a box is the default, and <code>RECT</code> is a <code>MEAS</code> form</td></tr>`;
   const cmdRow = (cmd, short, text) => `<tr><td>${code(cmd)}</td><td>${short}</td><td>${text}</td></tr>`;
   document.getElementById('helpBody').innerHTML =
     '<h3>Typing</h3><table>' +
     row(code(HOTKEY), 'Hotkey: types <code>*</code> to open an element list, and <code>\\</code> to close an open one. Inside a bracketed value it types itself. You can type <code>*</code> and <code>\\</code> yourself instead. A period types normally.') +
     row(code('*S, A\\ specifier'), 'One line: the elements in series, then the specifier.') +
     row('Specifier', 'Everything after the closing <code>\\</code>. It specifies each element (shape, color, value) and then how the line behaves (<code>branch</code>, <code>wait</code>, <code>return</code>, <code>end</code>): the element is worked on before its location.') +
-    row('Groups', 'Semicolons split the specifier into groups, one property type each; inside a group the commas give one entry per element, in the order of the names. <code>*A, B\\ proc, dec; red, blue</code> makes A a red process block and B a blue decision. Group order does not matter and the last group needs no semicolon. The v4 form <code>*A, B\\ tri, rect, branch wait</code> still works.') +
+    row('Groups', 'Semicolons split the specifier into groups, one property type each; inside a group the commas give one entry per element, in the order of the names. <code>*A, B\\ proc, dec; red, blue</code> makes A a red process block and B a blue decision. Group order does not matter and the last group needs no semicolon. The v4 form <code>*A, B\\ tri, circ, branch wait</code> still works.') +
     row('Values', 'Text after <code>=</code>, shown inside the block with the name small above it: <code>*P1\\ proc = load data</code>. Several elements: <code>*A, B\\ proc = read, dec = x &gt; 10</code>. A value with commas or semicolons goes in square brackets: <code>dec = [x &gt; 10, y &lt; 3]</code>.') +
     row('Colors', '<code>red</code> <code>orange</code> <code>yellow</code> <code>green</code> <code>blue</code> <code>purple</code> <code>pink</code> <code>gray</code> <code>black</code>: a light fill with the outline and text in that color. Can share an entry with a shape: <code>dec red = x &gt; 10</code>.') +
     row('Start', 'The first element is always the start; there is no start word.') +
@@ -1582,7 +1593,7 @@ if (typeof document !== 'undefined') {
     '</table><h3>Shapes and flow blocks (tentative): one per element in order, before the behavior</h3><table>' +
     '<tr><th>Command</th><th>Shorthand</th><th>Shape</th></tr>' +
     shapeRows +
-    '</table><p>Example: <code>*A, B\\ tri, rect, branch wait</code> makes A a triangle and B a rectangle, then the line branches and waits. The shapes come before the behavior. You can also click a block in the diagram to step through the shapes; the words are written into the script for you.</p>' +
+    '</table><p>Example: <code>*A, B\\ tri, circ, branch wait</code> makes A a triangle and B a circle, then the line branches and waits. The shapes come before the behavior. You can also click a block in the diagram to step through the shapes; the words are written into the script for you.</p>' +
     '<h3>Circuit parts: drawn on the wire, in the same diagram as the blocks</h3><table>' +
     '<tr><th>Code</th><th>Word</th><th>Part, and the unit its value is read in</th></tr>' +
     // the word column is held narrow so the symbol and its description get the room
@@ -1591,10 +1602,10 @@ if (typeof document !== 'undefined') {
     wide('Values', '<code>*R1\\ R = 4.7k</code> shows 4.7 kΩ under the resistor; <code>*C1\\ C = 10u</code> shows 10 µF. The unit may be typed too: <code>4.7kΩ</code>, <code>4.7k ohm</code>, <code>10uF</code>. A power works: <code>4.7e3</code> shows 4.7 kΩ. Without <code>=</code> the part is drawn with no value. A value that is not a number is shown as typed.') +
     wide('Prefixes', '<code>p</code> pico, <code>n</code> nano, <code>u</code> or <code>µ</code> micro, <code>m</code> milli, <code>k</code> kilo, <code>M</code> mega, <code>G</code> giga.') +
     wide('Direction', 'Parts with a direction (<code>VS</code> <code>IS</code> <code>DVS</code> <code>DIS</code> <code>VAC</code> <code>IAC</code> <code>D</code>) are drawn negative to positive along the path, so current flows left to right. Write <code>REV</code> in the entry of a part to reverse it: <code>*V1\\ VS REV = 5</code> is a 5 V source drawn positive to negative. On other parts <code>REV</code> is ignored with a warning.') +
-    wide('Measure', 'Write <code>MEAS V</code> (shorthand <code>m</code>) in the entry of a part to mark the voltage across it, <code>MEAS I</code> for the current through it; <code>MEAS</code> alone means V. <code>*R_1\\ RES = 4.7k; MEAS V</code> draws <code>+ V &minus;</code> over the resistor, + where the current enters (left, or right on a part marked <code>REV</code>); <code>MEAS I</code> draws an arrow the way the current flows. The solver fills in the number (see Simulation). A source cannot measure its own quantity (no <code>MEAS V</code> on a voltage source, no <code>MEAS I</code> on a current source): that is an error. On a flow block <code>MEAS</code> is ignored with a warning.') +
+    wide('Measure', 'Write <code>MEAS V</code> (shorthand <code>m</code>) in the entry of a part to mark the voltage across it, <code>MEAS I</code> for the current through it; <code>MEAS</code> alone means V. <code>*R_1\\ RES = 4.7k; MEAS V</code> draws <code>+ V &minus;</code> over the resistor, + where the current enters (left, or right on a part marked <code>REV</code>); <code>MEAS I</code> draws an arrow the way the current flows. The solver fills in the number (see Simulation); an AC reading takes a form after <code>MEAS</code>: <code>POLE</code>, <code>RECT</code> or <code>SINE</code> (see AC). A source cannot measure its own quantity (no <code>MEAS V</code> on a voltage source, no <code>MEAS I</code> on a current source): that is an error. On a flow block <code>MEAS</code> is ignored with a warning.') +
     wide('Ground return', 'A diagram with circuit parts is a circuit: the left end of its first part and the last point of the main path both connect to ground, drawn as a return wire along the bottom with the ground sign (Settings can move it to the top). A branch with no return is left open; tie a point to ground with <code>GND</code> (<code>*C1, G1\\ CAP = 10u, GND; BRANCH</code>).') +
     wide('Simulation', 'When a part has <code>MEAS</code>, the circuit is solved for DC and the marker shows the reading, for example <code>+ 5 V &minus;</code>. CAP is open and IND is a short in DC; DIODE follows the Shockley equation. A dependent source takes <code>[gain*V(name)]</code> or <code>[gain*I(name)]</code> of another part, read the way <code>MEAS</code> reads it. Every part needs a number as its value (a diode needs none). If the circuit cannot be solved, a note under the script says why and the markers keep their quantity only.') +
-    wide('AC', 'With <code>VAC</code> or <code>IAC</code> sources the circuit is solved in phasors: CAP is jωC, IND is jωL. Each source keeps its own omega; the circuit is solved once per omega (and once for DC) with the other sources switched off, and the readings add up (superposition). A reading is written in the form chosen in Settings: polar <code>7.07 V ∠ −45°</code>, rectangular <code>5 − j5 V</code> or sinusoidal <code>7.07 cos(1000t − 45°) V</code>; a sum names each omega, as in <code>2 V + 3 V ∠ 0° @ 1000 rad/s</code>. A diode with AC sources needs a time simulation, which comes later, so that circuit is not solved.') +
+    wide('AC', 'With <code>VAC</code> or <code>IAC</code> sources the circuit is solved in phasors: CAP is jωC, IND is jωL. Each source keeps its own omega; the circuit is solved once per omega (and once for DC) with the other sources switched off, and the readings add up (superposition). Each marker writes its reading in the form named after <code>MEAS</code>: <code>POLE</code> <code>7.07 V ∠ −45°</code>, <code>RECT</code> <code>5 − j5 V</code> or <code>SINE</code> <code>7.07 cos(1000t − 45°) V</code>, as in <code>MEAS V RECT</code> (polar when none is given; a DC reading is a plain number in every form); a sum names each omega, as in <code>2 V + 3 V ∠ 0° @ 1000 rad/s</code>. A diode with AC sources needs a time simulation, which comes later, so that circuit is not solved.') +
     wide('Several parts','<code>*R1, C1\\ R = 4.7k, C = 10u; red, blue</code>: one entry per part, as for blocks.') +
     wide('Letter case', 'Single letters are case-sensitive: capitals are circuit parts (<code>R C L D</code>), small letters are shapes and commands (<code>c</code> circle, <code>d</code> decision, <code>r</code> return). So <code>C</code> is a capacitor and <code>c</code> a circle. Codes and words longer than one letter match in any case (<code>VS</code> or <code>vs</code>, <code>Branch</code>, <code>PROC</code>, <code>Resistor</code>).') +
     wide('Click a part', `Steps through the parts (${Object.keys(EE).join(', ')}) and writes the code into the script; the value is kept.`) +
@@ -1615,13 +1626,12 @@ if (typeof document !== 'undefined') {
     '</table>';
   // Settings page: the choices live in SETTINGS (read by the core), are saved per browser, and redraw at once.
   const setDlg = document.getElementById('setDlg'), setForm = document.getElementById('setForm');
-  try { Object.assign(SETTINGS, JSON.parse(localStorage.getItem('shorthand_schematic_v6_settings') || '{}')); } catch (e) {}
+  // only known keys are restored, so the AC form an earlier build saved does not come back as a stray setting
+  try { const saved = JSON.parse(localStorage.getItem('shorthand_schematic_v6_settings') || '{}'); for (const k of Object.keys(SETTINGS)) if (k in saved) SETTINGS[k] = saved[k]; } catch (e) {}
   for (const k of Object.keys(SETTINGS)) {
     const r = setForm.querySelector(`input[name="${k}"][value="${SETTINGS[k]}"]`);
     if (r) r.checked = true;
   }
-  // each AC form shows the same sample phasor (5 V at +30° and 377 rad/s), so the three can be compared side by side
-  setForm.querySelectorAll('.eg').forEach(s => { s.textContent = formatPhasor(5 * Math.cos(Math.PI / 6), 5 * Math.sin(Math.PI / 6), 'V', s.dataset.form, 377); });
   setForm.addEventListener('change', e => {
     if (!(e.target.name in SETTINGS)) return;
     SETTINGS[e.target.name] = e.target.value;
@@ -1713,7 +1723,7 @@ if (typeof document !== 'undefined') {
     const text = src.value, model = parse(text);
     const els = model.nodes.filter(n => n.type === 'el' && n.ln === ln).sort((a, b) => a.idx - b.idx);
     if (!els[idx]) return;
-    const t = setShape(text, ln, idx, nextShape(els[idx]), els.map(n => n.role ? 'auto' : 'rect'));
+    const t = setShape(text, ln, idx, nextShape(els[idx]), els.map(() => 'auto'));
     if (t === text) return;
     // keep the caret on the same line and column even though a line above it may have grown
     const before = text.slice(0, src.selectionStart).split('\n'), cl = before.length - 1, col = before[cl].length;
