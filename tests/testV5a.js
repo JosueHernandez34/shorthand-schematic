@@ -1,6 +1,6 @@
 // node testV5a.js [outDir] -> specifier groups, flow blocks, values, colors, yes/no, end guard, hotkey (shorthandSchematicV5a.html)
 const fs = require('fs'), vm = require('vm'), path = require('path');
-const page = fs.readFileSync(path.join(__dirname, '..', 'shorthandSchematicV5a.html'), 'utf8');
+const page = fs.readFileSync(path.join(__dirname, '..', process.env.APP_FILE || 'shorthandSchematicV5a.html'), 'utf8');
 const core = page.split('// ==CORE-START==')[1].split('// ==CORE-END==')[0];
 // HOTKEY and hotkeyText sit just after CORE-END, outside the browser-only block
 const hk = page.split('// ==CORE-END==')[1].split("if (typeof document !== 'undefined')")[0];

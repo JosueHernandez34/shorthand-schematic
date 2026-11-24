@@ -11,7 +11,8 @@ current version. The git history keeps every step in between.
 
 | File | Significant change it marks |
 |---|---|
-| `shorthandSchematicV5a.html` | Current. Flow blocks and values: specifier groups (semicolons split property types, commas give one entry per element), `proc` `dec` `io` (letters `p d i`), values after `=` shown in the block (`[ ]` for values with commas), color words, yes/no on decisions, apostrophe hotkey, an end must be the last element of its path. |
+| `shorthandSchematicV5b.html` | Current. Circuit parts in the same diagram as the blocks: `R` `C` `L` `D` and the sources `VS` `IS` `DVS` `DIS` (dependent ones as diamonds) drawn as symbols on the wire, values read in their unit with SI prefixes (`R = 4.7k` shows 4.7 kΩ, `C = 10u` shows 10 µF; `4.7kΩ`, `4.7k ohm`, `4.7e3` also work), single letters case-sensitive (`C` capacitor, `c` circle), small shorthand letters written out as capital words as you type (`s` then a space becomes `SERIES`; Backspace takes the whole word), click a part to step through the parts. |
+| `shorthandSchematicV5a.html` | Flow blocks and values: specifier groups (semicolons split property types, commas give one entry per element), `proc` `dec` `io` (letters `p d i`), values after `=` shown in the block (`[ ]` for values with commas), color words, yes/no on decisions, apostrophe hotkey, an end must be the last element of its path. |
 | `shorthandSchematicV4.html` | Visual editing: shape commands (`tri`, `rect`, `circ`, `dia`), click a block to change its shape, an endless white canvas with free pan and wheel zoom, a draggable and collapsible script panel, the schematic must be named first. |
 | `shorthandSchematicV3.html` | Working without the script panel: half-width collapsible panel, bottom current-line box, open-wait chips. |
 | `shorthandSchematicV2.html` | Fast typing and live feedback: period hotkey, auto-tabbing, one-line typing, shorthand, highlights, Help legend. |
@@ -38,6 +39,9 @@ Shorthand (tentative): `s` series, `b` branch, `w` wait, `r` return, `r2` return
 
 V5a specifier: `*A, B\ proc = read, dec red = [x > 10, y < 3]; branch wait`. Colors: red orange yellow green blue purple pink gray black.
 
+V5b circuit parts: `*R1, C1\ R = 4.7k, C = 10u; red, blue`. Sources: `VS` volts, `IS` amps, `DVS` and `DIS` dependent (an expression with `*` goes in brackets: `DVS = [2*Vx]`). Prefixes `p n u µ m k M G` (`m` milli, `M` mega). A diode's value is shown as typed.
+From V5b, single letters are case-sensitive (capitals are parts, small letters are shapes and commands); full words match in any case.
+
 ## Tests
 
 The parser sits between `CORE-START` and `CORE-END` comments in each page and is tested under Node
@@ -50,6 +54,7 @@ node tests/testV4.js
 node tests/testNameFirst.js
 node tests/testEndRule.js
 node tests/testV5a.js
+node tests/testV5b.js
 ```
 
-`testV2.js` and `testV3.js` also run against the earlier versions by changing `APP_FILE`.
+`testV2.js` to `testV5a.js` also run against other versions by changing `APP_FILE`.

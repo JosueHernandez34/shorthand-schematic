@@ -1,0 +1,1302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shorthand to Schematic V5b</title>
+<style>
+  :root { --bg:#f6f7f9; --panel:#fff; --ink:#1b2430; --muted:#66707d; --line:#d9dee5; --accent:#2457c5; --err:#b3261e; --warn:#8a5a00; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--ink); height:100vh; display:flex; flex-direction:column; }
+  header { padding:10px 16px; background:var(--panel); border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  header h1 { font-size:17px; margin:0; margin-right:auto; }
+  button { font:inherit; font-size:13px; padding:6px 12px; border:1px solid var(--line); background:#fff; border-radius:6px; cursor:pointer; color:var(--ink); }
+  button:hover { border-color:var(--accent); color:var(--accent); }
+  /* --leftw is the script panel width; dragging the divider sets it in pixels. The middle column is the divider. */
+  main { flex:1; display:grid; grid-template-columns: var(--leftw, max(140px, 19%)) 12px 1fr; min-height:0; }
+  #divider { position:relative; background:var(--line); cursor:col-resize; touch-action:none; user-select:none; }
+  #divider:hover, #divider.drag { background:var(--accent); }
+  #togglePanel { position:absolute; top:8px; left:0; width:12px; height:34px; padding:0; border:0; border-radius:0 6px 6px 0; background:var(--panel); color:var(--ink); font-size:14px; line-height:34px; cursor:pointer; box-shadow:0 0 0 1px var(--line); }
+  #togglePanel:hover { color:var(--accent); }
+  #rightPanel { user-select:none; cursor:grab; } #rightPanel.panning { cursor:grabbing; } #rightPanel .blk { cursor:pointer; }
+  /* Collapsed: the column shrinks to nothing and the left panel is hidden (not removed) so its text and undo history stay. */
+  main.collapsed { grid-template-columns: 0 12px 1fr; }
+  main.collapsed .left { visibility:hidden; overflow:hidden; }
+  main.collapsed #divider { cursor:default; }
+  .left { display:flex; flex-direction:column; background:var(--panel); min-height:0; min-width:0; overflow:hidden; }
+  /* Backdrop and textarea must share every font metric, or the highlighted lines drift off the text. */
+  .ed { position:relative; flex:1; min-height:0; background:#fff; }
+  #bd, #src { position:absolute; inset:0; margin:0; padding:14px; border:0; font:14px/21px ui-monospace, Consolas, Menlo, monospace; white-space:pre; tab-size:3; }
+  #bd { overflow:hidden; pointer-events:none; color:transparent; }
+  #bdIn { width:max-content; min-width:100%; }
+  #bd .bl { margin:0 -14px; padding:0 14px; min-height:21px; }
+  /* Bubble uses box-shadow instead of padding so the backdrop text keeps the textarea's exact character widths. */
+  #bd .wb { background:rgba(229,56,59,.4); border-radius:8px; box-shadow:0 0 0 2px rgba(229,56,59,.4); }
+  #bd .bl.strong { background:rgba(217,72,15,.24); }
+  #bd .bl.weak { background:rgba(229,154,58,.20); }
+  #src { width:100%; height:100%; resize:none; outline:none; background:transparent; color:var(--ink); overflow:auto; }
+  #msgs { border-top:1px solid var(--line); padding:8px 14px; font-size:13px; max-height:130px; overflow:auto; }
+  #msgs:empty { display:none; }
+  .err { color:var(--err); } .warn { color:var(--warn); }
+  code { background:#eef1f5; padding:1px 4px; border-radius:3px; font-size:12px; color:var(--ink); }
+  /* The canvas: plain white from edge to edge, no card, no scroll bars. The drawing is positioned by a transform. */
+  .right { position:relative; overflow:hidden; background:#fff; min-height:0; min-width:0; }
+  #out { position:absolute; left:0; top:0; transform-origin:0 0; will-change:transform; }
+  #out svg { display:block; }
+  #out .empty { width:min(640px, 80vw); }
+  .empty { padding:40px; color:var(--muted); }
+  .empty.err { color:var(--err); }
+  #errs { flex:1 1 100%; font-size:12px; color:var(--err); }
+  #errs:empty { display:none; }
+  #zoomBar { position:absolute; top:12px; right:14px; z-index:2; display:flex; gap:6px; }
+  #zoomBar button { min-width:36px; background:var(--panel); }
+  #bar { display:flex; align-items:center; gap:10px 14px; flex-wrap:wrap; padding:8px 16px; background:var(--panel); border-top:1px solid var(--line); }
+  #bar label { font-size:12px; color:var(--muted); }
+  #cur { flex:1 1 260px; min-width:200px; padding:6px 10px; border:1px solid var(--line); border-radius:6px; background:#fff; color:var(--ink); font:14px ui-monospace, Consolas, Menlo, monospace; }
+  #cur:focus { outline:2px solid var(--accent); outline-offset:-1px; }
+  #waits { display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:12px; color:var(--muted); }
+  /* Same red as the bubble in the script, so a chip and its bubble read as one thing. */
+  #waits .chip { color:var(--ink); background:rgba(229,56,59,.16); border:1px solid rgba(229,56,59,.55); border-radius:999px; padding:2px 10px; }
+  #waits .chip.in { background:rgba(229,56,59,.4); font-weight:600; }
+  #helpDlg { width:min(640px, 94vw); max-height:86vh; overflow:auto; padding:0; border:1px solid var(--line); border-radius:10px; background:var(--panel); color:var(--ink); }
+  #helpDlg::backdrop { background:rgba(27,36,48,.45); }
+  #helpDlg .hh { position:sticky; top:0; display:flex; align-items:center; justify-content:space-between; padding:12px 18px; background:var(--panel); border-bottom:1px solid var(--line); }
+  #helpDlg h2 { font-size:16px; margin:0; }
+  #helpBody { padding:6px 18px 16px; font-size:13px; }
+  #helpBody h3 { font-size:13px; margin:16px 0 6px; }
+  #helpBody table { border-collapse:collapse; width:100%; }
+  #helpBody td { padding:5px 8px 5px 0; vertical-align:top; border-top:1px solid var(--line); }
+  #helpBody th { text-align:left; font-weight:600; color:var(--muted); padding:0 8px 4px 0; }
+  #helpBody td:first-child { white-space:nowrap; width:1%; }
+  #helpBody svg { vertical-align:middle; }
+  /* Narrow screens stack the panels: the divider becomes a strip (no dragging) that still holds the toggle. */
+  @media (max-width:760px){
+    main { grid-template-columns:1fr; grid-template-rows: 45% 12px 1fr; }
+    main.collapsed { grid-template-columns:1fr; grid-template-rows: 0 12px 1fr; }
+    #divider, main.collapsed #divider { cursor:default; }
+    #togglePanel { top:0; left:auto; right:12px; width:34px; height:12px; line-height:10px; border-radius:0 0 6px 6px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Shorthand → Schematic <small style="font-weight:400;color:var(--muted)">V5b</small></h1>
+  <button id="ex">Load example</button>
+  <button id="svg">Download SVG</button>
+  <button id="png">Download PNG</button>
+  <button id="help" aria-haspopup="dialog">Help</button>
+</header>
+<dialog id="helpDlg" aria-labelledby="helpTitle">
+  <div class="hh"><h2 id="helpTitle">Legend</h2><button id="helpClose" aria-label="Close help">Close</button></div>
+  <div id="helpBody"></div>
+</dialog>
+<main>
+  <div class="left" id="leftPanel">
+    <div class="ed"><div id="bd"><div id="bdIn"></div></div><textarea id="src" spellcheck="false"></textarea></div>
+    <div id="msgs"></div>
+  </div>
+  <div id="divider" role="separator" aria-orientation="vertical" aria-label="Script panel border: drag or use the arrow keys to resize" tabindex="0">
+    <button id="togglePanel" aria-expanded="true" aria-controls="leftPanel" aria-label="Hide script panel" title="Hide script panel">&lsaquo;</button>
+  </div>
+  <div class="right" id="rightPanel">
+    <div id="zoomBar" role="group" aria-label="Zoom">
+      <button id="zOut" aria-label="Zoom out">&minus;</button>
+      <button id="zFit" aria-label="Fit the diagram to the width"><span id="zPct">100%</span></button>
+      <button id="zIn" aria-label="Zoom in">+</button>
+    </div>
+    <div id="out"></div>
+  </div>
+</main>
+<footer id="bar">
+  <label for="cur">Current line</label>
+  <input id="cur" type="text" spellcheck="false" autocomplete="off" placeholder="*A, B\ branch wait">
+  <div id="waits" aria-live="polite"></div>
+  <div id="errs" role="alert"></div>
+</footer>
+
+<script>
+// ==CORE-START==
+const EXAMPLE = `*Schematic\\
+*S, A\\ series
+*A_1\\ branch wait
+*A_2, B_2\\ branch return^2
+*B_1\\ return
+*B\\ series
+*C, D\\ series
+*E\\ end
+*\\
+`;
+
+// The file always holds * and \ (the period is only a typing hotkey, see the editor code). One reading
+// applies to every file: levels come from the commands, typed indentation and "meet" are ignored. The old
+// v1 example gives the same picture under this reading, so no separate old-file parser is kept.
+function parse(src, opts) {
+  const errors = [], warnings = [];
+  const lines = src.replace(/\t/g, '   ').split(/\r?\n/);
+  return parseV2(lines, !!(opts && opts.partial), errors, warnings);
+}
+
+// Tolerates "return2" as well as "return^2" so the parser still works if the editor's
+// auto-conversion was bypassed (paste, another editor).
+// Shape words, flow blocks included: a word or a letter (tentative, like SHORT); "auto" keeps the default look
+// (pill for the start, flag for the end, plain box otherwise). Flow blocks are shapes too, so a line can mix them
+// with EE parts later: proc is a box, dec a diamond that shows its value, io a parallelogram. "d" moved from the
+// plain diamond to dec (Josue, 11/24); a dec with no value looks exactly like the old diamond, so v4 scripts hold.
+// EE parts (V5b) join the same table, so a line can mix flow blocks and circuit parts (no segregation, Josue 11/24).
+// Their letters are uppercase and the shape letters lowercase; only single letters are case-sensitive (Josue, 11/24),
+// so C is a capacitor and c a circle, D a diode and d a decision. Full words match in any case.
+const SHAPE_WORDS = { rect: 'rect', rectangle: 'rect', x: 'rect', tri: 'tri', triangle: 'tri', t: 'tri',
+  circ: 'circ', circle: 'circ', c: 'circ', dia: 'dia', diamond: 'dia', auto: 'auto',
+  proc: 'proc', process: 'proc', p: 'proc', dec: 'dec', decision: 'dec', d: 'dec', io: 'io', i: 'io',
+  R: 'R', resistor: 'R', C: 'C', capacitor: 'C', L: 'L', inductor: 'L', D: 'D', diode: 'D',
+  // Sources are two- and three-letter codes (Josue, 11/24): VS replaced the single V, and the D in DVS and DIS
+  // means dependent. Like every code longer than one letter they match in any case.
+  vs: 'VS', vsource: 'VS', is: 'IS', isource: 'IS', dvs: 'DVS', dvsource: 'DVS', dis: 'DIS', disource: 'DIS' };
+// A single letter is looked up exactly as typed; a word is looked up in lower case.
+const shapeOf = w => SHAPE_WORDS[w.length === 1 ? w : w.toLowerCase()];
+// EE parts: the unit their value is read in. A diode has none, so its value is shown as typed (Josue, 11/24).
+// units lists what may be typed after the number; single letters exactly, words in any case.
+const EE = {
+  R: { unit: 'Ω', units: ['Ω', 'Ω', 'ohm', 'ohms'] }, // the Greek omega and the separate ohm sign look the same
+  C: { unit: 'F', units: ['F', 'farad', 'farads'] },
+  L: { unit: 'H', units: ['H', 'henry', 'henries', 'henrys'] },
+  VS: { unit: 'V', units: ['V', 'volt', 'volts'] },
+  IS: { unit: 'A', units: ['A', 'amp', 'amps', 'ampere', 'amperes'] },
+  // A dependent source's value is usually an expression such as 2*Vx, which is not a number and so is shown as
+  // typed; a plain number still gets its unit.
+  DVS: { unit: 'V', units: ['V', 'volt', 'volts'] },
+  DIS: { unit: 'A', units: ['A', 'amp', 'amps', 'ampere', 'amperes'] },
+  D: { unit: '' },
+};
+// The name of an EE part is drawn small above its symbol. Josue's 11/24 note says a part with no value is drawn
+// with "no label"; CC reads that as no value label and keeps the name so parts stay identifiable. False hides it.
+const SHOW_EE_NAME = true;
+// What each shape is drawn as; flow words reuse the plain shapes where they look the same.
+const DRAW_AS = { proc: 'rect', dec: 'dia' };
+// Wider than a box so the label still fits inside a triangle, circle, diamond or parallelogram.
+const SHAPE_WIDTH = { tri: 1.3, circ: 1.15, dia: 1.45, dec: 1.45, io: 1.25 };
+
+// SI prefixes (Josue, 11/24): m is milli and M mega because single letters are case-sensitive; u and µ are micro.
+const PREFIX = { p: -12, n: -9, u: -6, 'µ': -6, 'μ': -6, m: -3, '': 0, k: 3, M: 6, G: 9 };
+const PREFIX_OUT = { '-12': 'p', '-9': 'n', '-6': 'µ', '-3': 'm', '0': '', '3': 'k', '6': 'M', '9': 'G' };
+// An EE value is a number, an optional prefix and an optional unit: 4.7k, 4.7kΩ, 4.7k ohm, 10u, 10 µF.
+// The number may carry a power (4.7e3), which is why e stopped meaning end. The result is the value with real
+// symbols (4.7 kΩ, 10 µF); a typed power is rewritten in engineering form. Anything else is shown as typed.
+function eeValue(kind, value) {
+  const ee = EE[kind];
+  if (!ee || !ee.unit || value == null) return value;
+  const m = value.trim().match(/^([+-]?(?:\d+(?:\.\d*)?|\.\d+))(?:e([+-]?\d+))?\s*([pnuµμmkMG]?)\s*(\S*)$/);
+  if (!m) return value;
+  const unitOk = u => !u || ee.units.some(x => x.length === 1 ? x === u : x === u.toLowerCase());
+  let [, num, pow, pre, unit] = m;
+  // a unit for another part (10 kH on a resistor) is a typo worth seeing, so the value stays as typed
+  if (!unitOk(unit)) return value;
+  if (pow !== undefined) {
+    const x = parseFloat(num) * Math.pow(10, +pow + PREFIX[pre]);
+    if (!isFinite(x)) return value;
+    const e3 = x === 0 ? 0 : Math.max(-12, Math.min(9, Math.floor(Math.log10(Math.abs(x)) / 3) * 3));
+    num = String(+(x / Math.pow(10, e3)).toPrecision(6)); pre = PREFIX_OUT[e3];
+  } else pre = PREFIX_OUT[PREFIX[pre]];
+  return num + ' ' + pre + ee.unit;
+}
+// Color words: a light fill keeps the label readable, the outline and label carry the color.
+const COLORS = {
+  red: { stroke: '#c92a2a', fill: '#ffe3e3' }, orange: { stroke: '#d9480f', fill: '#ffe8cc' },
+  yellow: { stroke: '#946c00', fill: '#fff3bf' }, green: { stroke: '#2b8a3e', fill: '#d3f9d8' },
+  blue: { stroke: '#1971c2', fill: '#d0ebff' }, purple: { stroke: '#6741d9', fill: '#e5dbff' },
+  pink: { stroke: '#c2255c', fill: '#ffdeeb' }, gray: { stroke: '#495057', fill: '#e9ecef' },
+  grey: { stroke: '#495057', fill: '#e9ecef' }, black: { stroke: '#111111', fill: '#dee2e6' },
+};
+
+// Split on sep, but not inside [ ], so a bracketed value may hold commas and semicolons.
+function splitTop(s, sep) {
+  const out = []; let depth = 0, cur = '';
+  for (const ch of s) {
+    if (ch === '[') depth++;
+    else if (ch === ']' && depth > 0) depth--;
+    if (ch === sep && depth === 0) { out.push(cur); cur = ''; } else cur += ch;
+  }
+  out.push(cur);
+  return out;
+}
+
+// The specifier is semicolon groups; in each group the commas give one entry per element, in the order of the
+// names. An entry holds bare words (shape, color) and an optional "= value". Group order does not matter because
+// each entry is recognized by its words. The first word that is not a property starts the behavior part, and
+// everything after it in that group is behavior or comment: that keeps the v4 form "tri, rect, branch wait"
+// and the v4 rule that a shape word after a command is not a shape.
+function readSpecifier(specifier, n) {
+  const props = Array.from({ length: n }, () => ({}));
+  const cmds = [];
+  for (const group of splitTop(specifier, ';')) {
+    let k = 0, inCmds = false;
+    for (const raw of splitTop(group, ',')) {
+      const entry = raw.trim();
+      if (inCmds) { cmds.push(entry); continue; }
+      if (!entry) { k++; continue; } // an empty entry skips that element
+      const eq = entry.indexOf('=');
+      const words = (eq < 0 ? entry : entry.slice(0, eq)).trim().split(/\s+/).filter(Boolean);
+      const p = {}; let used = 0;
+      for (const w of words) {
+        const lw = w.toLowerCase();
+        if (shapeOf(w) && !p.shape) p.shape = shapeOf(w);
+        else if (w.length > 1 && COLORS[lw] && !p.color) p.color = lw;
+        else break;
+        used++;
+      }
+      if (used < words.length) { // behavior words: the rest of the entry and of the group
+        cmds.push(words.slice(used).join(' ') + (eq < 0 ? '' : ' ' + entry.slice(eq)));
+        inCmds = true;
+      } else if (eq >= 0) p.value = unbracket(entry.slice(eq + 1).trim());
+      if (used || eq >= 0) { if (k < n) Object.assign(props[k], p); k++; }
+    }
+  }
+  return { props, rest: cmds.join(' ') };
+}
+const unbracket = v => /^\[[\s\S]*\]$/.test(v) ? v.slice(1, -1).trim() : v;
+
+// Click on a block: the shape that comes next. Start and end blocks also get a step back to their default look.
+// An EE part steps through the EE parts instead, so a click never turns a circuit into boxes.
+function nextShape(n) {
+  if (EE[n.shape]) { const ee = Object.keys(EE); return ee[(ee.indexOf(n.shape) + 1) % ee.length]; }
+  const seq = n.role ? ['auto', 'tri', 'circ', 'dia', 'io', 'rect'] : ['rect', 'tri', 'circ', 'dia', 'io'];
+  const at = seq.indexOf(n.shape || (n.role ? 'auto' : 'rect'));
+  return seq[(at + 1) % seq.length]; // proc and dec are not in the cycle, so a click on one goes to the first shape
+}
+
+// Write one element's shape into its script line, keeping its color and value. The edit goes into the first
+// group that holds element entries; earlier elements without an entry get a filler (defaults[i]: "auto" for
+// start/end blocks, "rect" otherwise) so the entries stay in element order. With no such group, a new one is
+// written first in the v4 form (shapes, then the rest) or, if the line already uses groups, as its own group.
+function setShape(text, ln, idx, shape, defaults) {
+  const lines = text.split('\n');
+  const m = (lines[ln - 1] || '').match(/^(\s*\*\s*([^\\]*?)\s*\\)\s*(.*)$/);
+  if (!m) return text;
+  const groups = splitTop(m[3], ';');
+  const isProp = e => { const r = readSpecifier(e, 1); return !r.rest.trim() && Object.keys(r.props[0]).length > 0; };
+  const fill = i => (defaults && defaults[i]) || 'rect';
+  let gi = groups.findIndex(g => isProp(splitTop(g, ',')[0].trim()));
+  let entries, tail;
+  if (gi < 0) {
+    entries = []; tail = [];
+    if (groups.length === 1) { const r = groups[0].trim(); tail = r ? [r] : []; groups[0] = ''; }
+    else groups.unshift('');
+    gi = 0;
+  } else {
+    const all = splitTop(groups[gi], ',').map(s => s.trim());
+    const cut = all.findIndex(e => e && !isProp(e));
+    entries = cut < 0 ? all : all.slice(0, cut);
+    tail = cut < 0 ? [] : all.slice(cut);
+  }
+  while (entries.length <= idx) entries.push(fill(entries.length));
+  // swap the entry's shape word, or put one in front of its color and value
+  const e = entries[idx];
+  const eq = e.indexOf('=');
+  const head = (eq < 0 ? e : e.slice(0, eq)).trim().split(/\s+/).filter(Boolean);
+  const si = head.findIndex(w => shapeOf(w));
+  // a word written out in capitals is replaced in capitals, so a click keeps the line's style
+  const caps = si >= 0 && head[si].length > 1 && head[si] === head[si].toUpperCase();
+  if (si >= 0) head[si] = caps ? shape.toUpperCase() : shape; else head.unshift(shape);
+  entries[idx] = head.join(' ') + (eq < 0 ? '' : ' ' + e.slice(eq).trim());
+  // trailing "auto" entries say nothing, so they are dropped as in v4
+  while (entries.length && entries[entries.length - 1].toLowerCase() === 'auto') entries.pop();
+  groups[gi] = [...entries, ...tail].join(', ');
+  const specifier = groups.map(g => g.trim()).filter(Boolean).join('; ');
+  lines[ln - 1] = m[1] + (specifier ? ' ' + specifier : '');
+  return lines.join('\n');
+}
+
+// Command shorthand. Tentative: the letters may change, so they live in this one table. "r2" is "return2".
+// "e" no longer means end (Josue, 11/24): end is spelled out so e stays free for powers in engineering values.
+const SHORT = { s: 'series', b: 'branch', w: 'wait', r: 'return' };
+// The letters are matched exactly as typed (V5b: single letters are case-sensitive), so R stays a resistor
+// and never reads as return; this runs before the words are lowered.
+function expandShorthand(c) {
+  return c.replace(/(^|[^\w^])(r\^?\d+|[rbws])(?![\w^])/g, (m, pre, t) =>
+    pre + (t.length > 1 ? 'return^' + t.replace(/\D/g, '') : SHORT[t]));
+}
+
+// Typing aid (Josue, 11/24): a small shorthand letter in the specifier is rewritten as its full word in capitals
+// the moment a space, comma or semicolon follows it (s becomes SERIES), so the specifier reads as words. Enter and
+// the hotkey that starts the next list rewrite it too, so the last letter of a line is not left behind. The capital
+// part codes (R, C, VS, DIS...) are already the names engineers read on a schematic, so they stay as typed.
+// The word for each letter comes from the tables, so it cannot drift from what the parser accepts.
+const LETTER_WORDS = {};
+for (const [k, v] of Object.entries(SHORT)) LETTER_WORDS[k] = v.toUpperCase();
+for (const [k, v] of Object.entries(SHAPE_WORDS)) {
+  if (k.length === 1 && k === k.toLowerCase()) LETTER_WORDS[k] = Object.keys(SHAPE_WORDS).find(w => w.length > 1 && SHAPE_WORDS[w] === v).toUpperCase();
+}
+const EXPANDED = new RegExp('(?:' + [...new Set(Object.values(LETTER_WORDS))].join('|') + '|RETURN\\^\\d+)');
+
+// True when the text before a spot on a line is in the specifier and not inside a value, where a letter is a
+// shorthand and not part of an element name or of free text such as "proc = b".
+function inSpecifier(linePrefix) {
+  const m = linePrefix.match(/^\s*\*[^\\]*\\/);
+  if (!m) return false;
+  let depth = 0, inVal = false;
+  for (const ch of linePrefix.slice(m[0].length)) {
+    if (ch === '[') depth++;
+    else if (ch === ']' && depth > 0) depth--;
+    else if (depth === 0) { if (ch === '=') inVal = true; else if (ch === ',' || ch === ';') inVal = false; }
+  }
+  return depth === 0 && !inVal;
+}
+
+// Called after a character is typed at caret - 1. Returns the new text and caret, or null when nothing changes.
+// undoable says the trigger was a space, comma or semicolon, so an immediate Backspace may take the word back.
+function expandAtCaret(text, caret) {
+  const trig = text[caret - 1];
+  if (!trig || !' ,;*\n'.includes(trig)) return null;
+  const ls = text.lastIndexOf('\n', caret - 2) + 1;
+  const before = text.slice(ls, caret - 1);
+  const m = before.match(/(^|[\s,;])(r\^?\d+|[a-z])$/);
+  if (!m) return null;
+  const tok = m[2], word = tok.length > 1 ? 'RETURN^' + tok.replace(/\D/g, '') : LETTER_WORDS[tok];
+  if (!word) return null;
+  const from = ls + before.length - tok.length;
+  if (!inSpecifier(text.slice(ls, from))) return null;
+  return { text: text.slice(0, from) + word + text.slice(caret - 1), caret: caret + word.length - tok.length, undoable: ' ,;'.includes(trig) };
+}
+
+// Backspace on a written-out word removes the whole word, not one letter. just is true when the previous keystroke
+// wrote the word out: then the space or comma that triggered it goes too, which undoes exactly what was typed.
+// Only the capital words the rewrite produces count, so a word typed in lower case still deletes letter by letter.
+function backspaceWord(text, caret, just) {
+  const ls = text.lastIndexOf('\n', caret - 1) + 1;
+  const before = text.slice(ls, caret);
+  const m = (just && before.match(new RegExp('(^|[\\s,;])(' + EXPANDED.source + ')[ ,;]$')))
+    || before.match(new RegExp('(^|[\\s,;])(' + EXPANDED.source + ')$'));
+  if (!m) return null;
+  const from = caret - (m[0].length - m[1].length);
+  if (!inSpecifier(text.slice(ls, from))) return null;
+  return { from, to: caret };
+}
+
+function readCommands(specifier) {
+  const c = expandShorthand(specifier).toLowerCase();
+  const r = c.match(/\breturn\s*(?:\^\s*)?(\d+)?/);
+  return {
+    branch: /\bbranch\b/.test(c), wait: /\bwait\b/.test(c),
+    ret: !!r, retN: r && r[1] ? Math.max(1, +r[1]) : 1,
+    end: /\bend\b/.test(c),
+  };
+}
+
+// partial=true is for text still being typed: an unclosed "*A, B" line is read as an element list
+// with no command yet, so the preview and the highlight work before the closing backslash exists.
+function parseV2(lines, partial, errors, warnings) {
+  const LINE = /^\s*\*\s*([^\\]*?)\s*\\\s*(.*)$/;
+  const OPEN = /^\s*\*\s*([^\\]*?)\s*$/;
+  let lastIdx = -1;
+  lines.forEach((l, i) => { if (l.trim()) lastIdx = i; });
+
+  const nodes = [], edges = [];
+  const addNode = o => { o.id = nodes.length; nodes.push(o); return o; };
+  const link = (a, b) => edges.push([a.id, b.id]);
+  const junction = lane => addNode({ type: 'junction', lane, w: 10 });
+
+  const main = { lane: 0, cursor: null, order: 0, lines: [], state: 'main' };
+  // waiting[k] is the path at level k: the main path, then each branch that is still open.
+  const waiting = [main];
+  const all = [], pending = [], levels = new Map(), info = new Map(), badEnds = [];
+  let laneCount = 1, orderCount = 1, first = true, title = 'Schematic', started = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    if (!raw.trim()) continue;
+    let body, specifier, m = raw.match(LINE);
+    if (m) { body = m[1]; specifier = m[2]; }
+    else if (partial && i === lastIdx && (m = raw.match(OPEN))) {
+      if (m[1] === '') continue; // only the opening asterisk so far
+      body = m[1]; specifier = '';
+    } else { errors.push(`Line ${i + 1}: expected the form *elements\\ specifier`); continue; }
+
+    const ln = i + 1;
+    if (!started) {
+      // The schematic must be named before anything else, so the first line may only be a name. Anything else
+      // there (elements, an empty name, commands) is an error and nothing is drawn until it is fixed.
+      const why = body === '' ? 'the name is empty' : body.includes(',') ? 'it lists several elements' : specifier.trim() ? 'it has commands after the name' : '';
+      if (why) {
+        errors.push(`Line ${ln}: name the schematic first (${why}). The first line is only its name, like *Schematic\\ , then add lines such as *A, B\\ below it.`);
+        break;
+      }
+      title = body; started = true; continue;
+    }
+    if (body === '') break; // closing *\
+    const els = body.split(',').map(s => s.trim()).filter(Boolean);
+    if (!els.length) { errors.push(`Line ${ln}: no elements`); continue; }
+    const sp = readSpecifier(specifier, els.length); // element properties, then the location commands
+    const cmd = readCommands(sp.rest);
+
+    const top = waiting[waiting.length - 1];
+    let f = top;
+    levels.set(ln, cmd.branch ? waiting.length : waiting.length - 1);
+    if (cmd.branch) {
+      if (!top.cursor) { errors.push(`Line ${ln}: branch before any element`); continue; }
+      const j = junction(top.lane);
+      // A branch leaving straight from a decision is its "no" path; the path that carries on is "yes".
+      if (top.cursor.shape === 'dec') j.decision = true;
+      link(top.cursor, j);
+      top.cursor = j;
+      f = { lane: laneCount++, cursor: j, order: orderCount++, lines: [], state: 'open' };
+      all.push(f);
+    }
+    f.lines.push(ln);
+
+    let lastEl = null;
+    for (const [i, label] of els.entries()) {
+      const p = sp.props[i];
+      const shape = p.shape && p.shape !== 'auto' ? p.shape : undefined;
+      // A value is what the block shows; the name then sits small above it. Width follows whichever is inside.
+      const ee = !!EE[shape];
+      // An EE part's value is read in its unit (4.7k on a resistor shows 4.7 kΩ); a block's value is free text.
+      const value = ee ? eeValue(shape, p.value) : p.value;
+      const shown = value ? value : label.replace('_', '');
+      // An EE part sits on the wire with its texts above and below, so it is only as wide as the symbol or the
+      // longer text; the leads stretch to fill the rest.
+      const w = ee ? Math.max(64, 10 + Math.max(value ? value.length * 8 : 0, SHOW_EE_NAME ? label.length * 7.5 : 0))
+        : Math.max(56, 16 + shown.length * (value ? 8.5 : 10)) * (SHAPE_WIDTH[shape] || 1);
+      // ln and idx say which script line and which element of it this block is, so a click can edit that line
+      const n = addNode({ type: 'el', label, lane: f.lane, shape, ln, idx: i, value, color: p.color,
+        w: Math.round(w) });
+      if (first) { n.role = 'start'; first = false; }
+      if (f.cursor) link(f.cursor, n);
+      f.cursor = n; lastEl = n;
+    }
+    // An end is refused while any branch still waits on its return: that branch could never rejoin. The
+    // check runs after this line's own commands, so a return that closes the last waiting branch may end.
+    const endHere = cmd.end;
+
+    // A line on a path claims the oldest pending return aimed at that path, so no "meet" keyword is needed.
+    const cand = pending.filter(p => !p.done && p.target === f).sort((a, b) => a.order - b.order)[0];
+    if (cand) {
+      const j = junction(f.lane);
+      link(f.cursor, j); f.cursor = j;
+      link(cand.last, j); cand.done = true;
+    }
+
+    let closedLane = null;
+    if (cmd.branch) {
+      if (cmd.ret) { // closed branch: "wait" on the same line adds nothing, the return is pending anyway
+        const target = waiting[Math.max(0, waiting.length - cmd.retN)];
+        f.pend = { last: f.cursor, target, order: f.order, done: false, ln };
+        pending.push(f.pend);
+        f.state = 'pending'; closedLane = f.lane;
+      } else if (cmd.wait) { waiting.push(f); f.state = 'waiting'; }
+      else f.state = 'ended'; // plain branch terminates at its last element
+    } else if (cmd.ret) {
+      const idx = waiting.length - 1;
+      if (idx === 0) warnings.push(`Line ${ln}: return on the main path ignored`);
+      else {
+        const target = waiting[Math.max(0, idx - cmd.retN)];
+        f.pend = { last: f.cursor, target, order: f.order, done: false, ln };
+        pending.push(f.pend);
+        f.state = 'pending'; closedLane = f.lane;
+        waiting.pop();
+      }
+    }
+    if (endHere) {
+      const open = waiting.slice(1);
+      if (open.length) {
+        const which = open.map(b => `line ${b.lines[0]}`).join(', ');
+        errors.push(`Line ${ln}: end is not allowed while ${open.length === 1 ? 'a branch is' : open.length + ' branches are'} waiting on a return (${which}). Write the return first.`);
+        lastEl.badEnd = true; badEnds.push(ln);
+      } else lastEl.role = 'end';
+    }
+    info.set(ln, { lane: f.lane, before: top.lane, isBranch: cmd.branch, ret: cmd.ret, closedLane });
+  }
+
+  // Returns that found no line on their target path merge at the end of that path.
+  const endJ = new Map();
+  for (const p of pending.filter(p => !p.done)) {
+    warnings.push(`Line ${p.ln}: return has no line on its target path to rejoin; merged at the end of that path`);
+    let j = endJ.get(p.target);
+    if (!j) {
+      j = junction(p.target.lane);
+      if (p.target.cursor) link(p.target.cursor, j);
+      endJ.set(p.target, j);
+    }
+    link(p.last, j);
+  }
+
+  // An end block must be the last thing on its path (Josue, 11/24): it may close a branch that terminates,
+  // but if anything is wired after it (more elements, a rejoin, a return) it is in the middle of a path.
+  const out = new Set(edges.map(([a]) => a));
+  for (const n of nodes) {
+    if (n.role !== 'end' || !out.has(n.id)) continue;
+    errors.push(`Line ${n.ln}: ${n.label} is marked end, but the path continues after it. An end must be the last element of its path.`);
+    n.badEnd = true; delete n.role;
+    if (!badEnds.includes(n.ln)) badEnds.push(n.ln);
+  }
+
+  const branches = all.map(b => ({
+    lane: b.lane, lines: b.lines, order: b.order, target: b.pend ? b.pend.target.lane : null,
+    state: waiting.includes(b) ? 'waiting' : (b.pend && !b.pend.done ? 'pending' : (b.pend ? 'joined' : b.state)),
+  }));
+  return {
+    mode: 'v2', title, nodes, edges, lanes: laneCount, errors, warnings,
+    levels, info, branches, waitingLanes: waiting.map(w => w.lane), badEnds,
+  };
+}
+
+// Where the end command sits in a line (the word or its letter), so the editor can mark it in red.
+function endWordRange(raw) {
+  const cs = specifierStart(raw);
+  const w = cs < 0 ? null : raw.slice(cs).match(/(^|[^\w^])(end)(?![\w^])/i);
+  if (!w) return null;
+  const from = cs + w.index + w[1].length;
+  return { from, to: from + w[2].length };
+}
+
+// Strength per lane for the branches that are still waiting on a return. The text is cut at the caret
+// line, so what is highlighted matches what has been typed so far. Lane numbers come from the order
+// branches open, so they are the same in the cut text and in the whole text.
+function highlightAt(src, caretLn) {
+  const out = { lanes: new Map(), lines: new Map(), wait: null };
+  const all = src.split(/\r?\n/);
+  const m = parse(all.slice(0, caretLn).join('\n'), { partial: true });
+  // m0 is the text above the caret line: what is still unresolved before this line is typed. A line on a
+  // path resolves the oldest-created pending return aimed at that path, so that is the one shown strongest.
+  const m0 = parse(all.slice(0, caretLn - 1).join('\n'), { partial: true });
+  const open = b => b.state === 'waiting' || b.state === 'pending';
+  for (const b of m0.branches) if (open(b)) out.lanes.set(b.lane, 'weak');
+  for (const b of m.branches) if (open(b)) out.lanes.set(b.lane, 'weak');
+  const cur = m.info.get(caretLn);
+  const top0 = m0.waitingLanes[m0.waitingLanes.length - 1];
+  const due = (cur && cur.isBranch) ? null
+    : m0.branches.filter(b => b.state === 'pending' && b.target === top0).sort((a, b) => a.order - b.order)[0];
+  // Without a rejoin due, fall back to the open branch the line continues; once "return" is on the line
+  // it narrows to the branch that return closes (or, on a branch line, the new branch).
+  const strong = due ? due.lane
+    : cur ? (cur.ret ? (cur.isBranch ? cur.lane : cur.before) : cur.before) : top0;
+  if (strong > 0 && out.lanes.has(strong)) out.lanes.set(strong, 'strong');
+  for (const b of m.branches.concat(m0.branches)) {
+    const s = out.lanes.get(b.lane);
+    if (!s) continue;
+    for (const ln of b.lines) if (s === 'strong' || !out.lines.has(ln)) out.lines.set(ln, s);
+  }
+  // Red bubble on the "wait" of the innermost open branch, but only while the caret line sits on that
+  // branch's own level. A branch line is one level deeper, so branching off from inside it shows nothing,
+  // and once "return" is on the line the branch is no longer waiting, so the bubble clears.
+  out.wait = null;
+  const top = cur ? cur.before : m.waitingLanes[m.waitingLanes.length - 1];
+  const nested = !!(cur && cur.isBranch);
+  const wb = m.branches.find(b => b.lane === top);
+  if (top > 0 && !nested && wb && wb.state === 'waiting') {
+    const ln = wb.lines[0], raw = src.split(/\r?\n/)[ln - 1];
+    const cs = specifierStart(raw);
+    // the word in any case, the letter only lower case (single letters are case-sensitive)
+    const w = cs < 0 ? null : raw.slice(cs).match(/(^|[^\w^])([Ww][Aa][Ii][Tt]|w)(?![\w^])/);
+    if (w) { const from = cs + w.index + w[1].length; out.wait = { ln, from, to: from + w[2].length }; }
+  }
+  return out;
+}
+
+// Index where the command part of a line starts (just after the closing delimiter), or -1.
+function specifierStart(raw) {
+  const m = raw.match(/^\s*\*\s*[^\\]*?\s*\\\s*(.*)$/);
+  return m ? raw.length - m[1].length : -1;
+}
+
+// "return2" becomes "return^2" in the command part of a line; the caret moves with the text.
+function convertReturnDigits(text, caret) {
+  const lines = text.split('\n');
+  let pos = 0, shift = 0;
+  const done = lines.map(raw => {
+    const start = pos; pos += raw.length + 1;
+    const m = raw.match(/^\s*\*\s*[^\\]*?\s*\\\s*(.*)$/);
+    if (!m) return raw;
+    const cut = raw.length - m[1].length;
+    let rest = m[1], added = 0;
+    rest = rest.replace(/\breturn(\d+)/gi, (all, d, at) => {
+      if (start + cut + at + 6 <= caret) added++;
+      return 'return^' + d;
+    });
+    shift += added;
+    return raw.slice(0, cut) + rest;
+  });
+  return { text: done.join('\n'), caret: caret + shift };
+}
+
+// Everything can be typed on one line: an asterisk that opens a new element list (one that comes after a
+// closed list on the same line) starts a new line. An asterisk inside an open list is left alone.
+function splitSequences(text, caret) {
+  let pos = 0, shift = 0, cc = caret;
+  const out = text.split('\n').map(raw => {
+    const start = pos; pos += raw.length + 1;
+    let inList = false, seen = false, depth = 0;
+    const cuts = [];
+    for (let k = 0; k < raw.length; k++) {
+      // an asterisk inside a bracketed value is part of the value, not a new line
+      if (!inList && raw[k] === '[') depth++;
+      else if (!inList && raw[k] === ']' && depth > 0) depth--;
+      else if (!inList && depth === 0 && raw[k] === '*') { if (seen) cuts.push(k); inList = true; seen = true; }
+      else if (inList && raw[k] === '\\') inList = false;
+    }
+    if (!cuts.length) return raw;
+    let res = '', last = 0;
+    for (const k of cuts) {
+      const seg = raw.slice(last, k), kept = seg.replace(/\s+$/, ''), removed = seg.length - kept.length;
+      const a = start + k;
+      if (cc > a - removed && cc < a) cc = a; // a caret in the dropped spaces lands on the new line
+      if (cc >= a) shift += 1 - removed;
+      res += kept + '\n'; last = k;
+    }
+    return res + raw.slice(last);
+  });
+  return { text: out.join('\n'), caret: cc + shift };
+}
+
+// Indentation is derived from the commands (three spaces per level) and typed spaces are discarded.
+function reindentWithCaret(text, caret) {
+  const m = parse(text, { partial: true });
+  const lines = text.split('\n');
+  let pos = 0, delta = 0, newCaret = caret;
+  const out = lines.map((raw, i) => {
+    const start = pos; pos += raw.length + 1;
+    const onCaret = caret >= start && caret <= start + raw.length;
+    let level = m.levels.get(i + 1);
+    if (level === undefined) {
+      // A fresh blank line under the caret starts at the level a plain line would have there, so the
+      // first character typed already sits in the right place.
+      // (a line holding only the opening asterisk counts as blank: nothing typed after it yet)
+      if (!(onCaret && (!raw.trim() || /^\s*\*\s*$/.test(raw)) && i > 0)) return raw;
+      level = Math.max(0, parse(lines.slice(0, i).join('\n'), { partial: true }).waitingLanes.length - 1);
+    }
+    const oldInd = raw.length - raw.trimStart().length;
+    const ind = ' '.repeat(3 * level);
+    if (onCaret) {
+      // caret keeps its place inside the line's content, after the shift from every earlier line
+      newCaret = Math.max(caret + delta + ind.length - oldInd, start + delta + ind.length);
+    }
+    delta += ind.length - oldInd;
+    return ind + raw.trimStart();
+  });
+  // a caret past the last indented line only shifts by the total change
+  if (caret > pos - 1) newCaret = caret + delta;
+  return { text: out.join('\n'), caret: Math.max(0, newCaret) };
+}
+
+// Waits still open once the text through the caret line is read, outermost first. The last one is the
+// innermost: the one the next plain line continues and the next "return" closes.
+function openWaits(src, caretLn) {
+  const all = src.split(/\r?\n/);
+  const m = parse(all.slice(0, caretLn).join('\n'), { partial: true });
+  const open = m.branches.filter(b => b.state === 'waiting');
+  return open.map((b, i) => {
+    const body = (all[b.lines[0] - 1].match(/^\s*\*\s*([^\\]*?)\s*\\/) || [, ''])[1];
+    return { ln: b.lines[0], text: body, innermost: i === open.length - 1 };
+  });
+}
+
+// Result shape shared by the three box helpers: new text, caret offset, the line the caret is on (1-based),
+// that line without its tabs (what the box shows) and the caret offset inside it.
+function lineResult(t, c) {
+  const ln = t.slice(0, c).split('\n').length;
+  const ls = t.lastIndexOf('\n', c - 1) + 1;
+  const end = t.indexOf('\n', ls), raw = t.slice(ls, end < 0 ? undefined : end);
+  const ind = raw.length - raw.trimStart().length;
+  return { text: t, caret: c, ln, line: raw.trimStart(), barCaret: Math.max(0, c - ls - ind) };
+}
+
+// The bottom box edits one script line. This puts the box's text into line caretLn, then runs the same
+// clean-up as the script editor (return2, one-line splitting, tabbing).
+function barEdit(text, caretLn, value, valueCaret) {
+  const lines = text.split('\n');
+  while (lines.length < caretLn) lines.push('');
+  lines[caretLn - 1] = value;
+  let t = lines.join('\n');
+  let c = lines.slice(0, caretLn - 1).join('\n').length + (caretLn > 1 ? 1 : 0) + (valueCaret == null ? value.length : valueCaret);
+  let r = convertReturnDigits(t, c); t = r.text; c = r.caret;
+  r = splitSequences(t, c); t = r.text; c = r.caret;
+  r = reindentWithCaret(t, c);
+  return lineResult(r.text, r.caret);
+}
+
+// Enter in the box: a new line under the current one, tabbed to the level a plain line has there.
+function barEnter(text, caretLn) {
+  const lines = text.split('\n');
+  lines.splice(caretLn, 0, '');
+  const r = reindentWithCaret(lines.join('\n'), lines.slice(0, caretLn).join('\n').length + 1);
+  return lineResult(r.text, r.caret);
+}
+
+// Backspace in an empty box: drop that empty line and go back to the end of the one above.
+function barBack(text, caretLn) {
+  if (caretLn < 2) return null;
+  const lines = text.split('\n');
+  lines.splice(caretLn - 1, 1);
+  return lineResult(lines.join('\n'), lines.slice(0, caretLn - 1).join('\n').length);
+}
+
+const CFG = { H: 44, GAP: 46, LANE: 84, TOP: 78, LEFT: 36 };
+
+function layout(model) {
+  const { nodes, edges } = model;
+  const inc = nodes.map(() => []);
+  edges.forEach(([a, b]) => inc[b].push(a));
+  const layer = nodes.map(() => 0);
+  nodes.forEach((n, i) => { layer[i] = inc[i].length ? Math.max(...inc[i].map(a => layer[a])) + 1 : 0; });
+  const nLayers = Math.max(0, ...layer) + 1;
+  const colW = new Array(nLayers).fill(0);
+  nodes.forEach((n, i) => { colW[layer[i]] = Math.max(colW[layer[i]], n.w); });
+  const colX = []; let cum = CFG.LEFT;
+  for (let l = 0; l < nLayers; l++) { colX[l] = cum + colW[l] / 2; cum += colW[l] + CFG.GAP; }
+  nodes.forEach((n, i) => { n.x = colX[layer[i]]; n.y = CFG.TOP + n.lane * CFG.LANE; });
+  model.width = Math.max(360, cum - CFG.GAP + CFG.LEFT);
+  model.height = CFG.TOP + (model.lanes - 1) * CFG.LANE + CFG.H / 2 + 40;
+  return model;
+}
+
+const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const INK = '#1b3a8a';
+const BAD = '#e5383b'; // same red as the wait bubble in the script, so the two read as one kind of warning
+const HL = { strong: { stroke: '#d9480f', fill: '#ffe8d9', w: 3 }, weak: { stroke: '#d98a1f', fill: '#fff4e0', w: 2.5 } };
+
+function labelSVG(label, x, y, ink, size) {
+  const m = label.match(/^([^_]*)_(.+)$/);
+  const fs = size || 17, sub = Math.round(fs * 0.7);
+  const inner = m ? `${esc(m[1])}<tspan dy="${Math.round(fs * 0.3)}" font-size="${sub}">${esc(m[2])}</tspan>` : esc(label);
+  return `<text x="${x}" y="${y + Math.round(fs * 0.3)}" text-anchor="middle" font-family="system-ui, Segoe UI, sans-serif" font-size="${fs}" fill="${ink || INK}">${inner}</text>`;
+}
+// Values are free text, so they are drawn as typed: no subscript reading of "_".
+function valueSVG(value, x, y, ink) {
+  return `<text x="${x}" y="${y + 5}" text-anchor="middle" font-family="system-ui, Segoe UI, sans-serif" font-size="14" fill="${ink || INK}">${esc(value)}</text>`;
+}
+const smallText = (t, x, y, anchor) => `<text x="${x}" y="${y}" text-anchor="${anchor || 'start'}" font-family="system-ui, Segoe UI, sans-serif" font-size="11" fill="#555">${esc(t)}</text>`;
+
+function shapeSVG(kind, x0, y0, w, h, fill, stroke, sw) {
+  const a = `fill="${fill}" stroke="${stroke}" stroke-width="${sw}" stroke-linejoin="round"`;
+  const poly = pts => `<polygon points="${pts.map(p => p.join(',')).join(' ')}" ${a}/>`;
+  if (kind === 'pill') return `<rect x="${x0}" y="${y0}" width="${w}" height="${h}" rx="${h / 2}" ${a}/>`;
+  if (kind === 'flag') return poly([[x0, y0], [x0 + w, y0], [x0 + w, y0 + h - 14], [x0 + w - 14, y0 + h], [x0, y0 + h]]);
+  if (kind === 'tri') return poly([[x0, y0], [x0, y0 + h], [x0 + w, y0 + h / 2]]);
+  if (kind === 'circ') return `<ellipse cx="${x0 + w / 2}" cy="${y0 + h / 2}" rx="${w / 2}" ry="${h / 2}" ${a}/>`;
+  if (kind === 'dia') return poly([[x0 + w / 2, y0], [x0 + w, y0 + h / 2], [x0 + w / 2, y0 + h], [x0, y0 + h / 2]]);
+  // io: slanted sides, but the wires still meet the left and right middle, which lie on the slants
+  if (kind === 'io') { const s = Math.min(14, w * 0.18); return poly([[x0 + s, y0], [x0 + w, y0], [x0 + w - s, y0 + h], [x0, y0 + h]]); }
+  return `<rect x="${x0}" y="${y0}" width="${w}" height="${h}" rx="5" ${a}/>`;
+}
+
+// An EE part is drawn on the wire itself: leads from both edges of its slot to a symbol in the middle, so the
+// wires meet it at the left and right middle like every other block and the layout needs no special case.
+function eeSymbolSVG(kind, x0, y, w, stroke, sw) {
+  const cx = x0 + w / 2, x1 = x0 + w;
+  const a = `fill="none" stroke="${stroke}" stroke-width="${sw}" stroke-linejoin="round" stroke-linecap="round"`;
+  const leads = half => `<path d="M${x0} ${y} H${cx - half} M${cx + half} ${y} H${x1}" ${a}/>`;
+  if (kind === 'R') { // zigzag, six strokes
+    let d = `M${cx - 18} ${y}`;
+    for (let k = 0; k < 6; k++) d += ` L${cx - 18 + 6 * k + 3} ${y + (k % 2 ? 8 : -8)}`;
+    return leads(18) + `<path d="${d} L${cx + 18} ${y}" ${a}/>`;
+  }
+  if (kind === 'C') return leads(4) + `<path d="M${cx - 4} ${y - 12} V${y + 12} M${cx + 4} ${y - 12} V${y + 12}" ${a}/>`;
+  if (kind === 'L') { // four humps
+    let d = `M${cx - 20} ${y}`;
+    for (let k = 0; k < 4; k++) d += ' a5 5 0 0 1 10 0';
+    return leads(20) + `<path d="${d}" ${a}/>`;
+  }
+  // Sources: an independent one is a circle, a dependent one a diamond (the usual schematic convention). A voltage
+  // source carries + on the left and − on the right; a current source an arrow along the path, left to right.
+  if (kind === 'VS' || kind === 'IS' || kind === 'DVS' || kind === 'DIS') {
+    const body = kind[0] === 'D'
+      ? `<polygon points="${cx - 15},${y} ${cx},${y - 15} ${cx + 15},${y} ${cx},${y + 15}" fill="#fff" stroke="${stroke}" stroke-width="${sw}" stroke-linejoin="round"/>`
+      : `<circle cx="${cx}" cy="${y}" r="14" fill="#fff" stroke="${stroke}" stroke-width="${sw}"/>`;
+    const mark = kind.endsWith('VS')
+      ? `<path d="M${cx - 10} ${y} h7 M${cx - 6.5} ${y - 3.5} v7 M${cx + 3} ${y} h7" ${a} stroke-width="1.6"/>`
+      : `<path d="M${cx - 8} ${y} H${cx + 6} M${cx + 2} ${y - 4} L${cx + 7} ${y} L${cx + 2} ${y + 4}" ${a} stroke-width="1.8"/>`;
+    return leads(kind[0] === 'D' ? 15 : 14) + body + mark;
+  }
+  // D: anode on the left, the bar (cathode) on the right
+  return leads(10) + `<polygon points="${cx - 10},${y - 10} ${cx - 10},${y + 10} ${cx + 10},${y}" fill="${stroke}" stroke="${stroke}" stroke-width="${sw}" stroke-linejoin="round"/>` +
+    `<path d="M${cx + 10} ${y - 10} V${y + 10}" ${a}/>`;
+}
+
+// hl is the lane to strength map from highlightAt; omit it for a clean drawing (downloads).
+// interactive adds the click targets used on screen; downloads leave them out.
+function renderSVG(model, hl, interactive) {
+  layout(model);
+  const { nodes, edges, width, height, title } = model;
+  const rank = s => s === 'strong' ? 2 : s === 'weak' ? 1 : 0;
+  const hlOf = n => (hl && n.type === 'el') ? hl.get(n.lane) : undefined;
+  const o = [];
+  o.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`);
+  o.push(`<rect width="100%" height="100%" fill="#fff"/>`);
+  o.push(`<text x="16" y="28" font-family="system-ui, Segoe UI, sans-serif" font-size="15" font-weight="600" fill="#444">${esc(title)}</text>`);
+  // wires: a highlighted branch also colors the wires that enter and leave it
+  for (const [a, b] of edges) {
+    const u = nodes[a], v = nodes[b];
+    let d;
+    if (u.lane === v.lane) d = `M${u.x + u.w / 2} ${u.y} H${v.x - v.w / 2}`;
+    else if (v.type === 'junction') d = `M${u.x + u.w / 2} ${u.y} H${v.x} V${v.y}`;
+    else d = `M${u.x} ${u.y} V${v.y} H${v.x - v.w / 2}`;
+    const su = hlOf(u), sv = hlOf(v);
+    const s = rank(su) >= rank(sv) ? su : sv;
+    const st = s ? HL[s] : null;
+    o.push(`<path d="${d}" fill="none" stroke="${st ? st.stroke : INK}" stroke-width="${st ? st.w : 2}" stroke-linejoin="round"/>`);
+    // yes on the wire that carries on from a decision, no on the branch that leaves it
+    if (u.decision) o.push(u.lane === v.lane ? smallText('yes', u.x + 7, u.y - 6) : smallText('no', u.x + 6, u.y + 18));
+  }
+  const h = CFG.H;
+  for (const n of nodes) {
+    if (n.type === 'junction') { o.push(`<circle cx="${n.x}" cy="${n.y}" r="3.5" fill="${INK}"/>`); continue; }
+    const st = hlOf(n) ? HL[hlOf(n)] : null;
+    const col = n.color ? COLORS[n.color] : null;
+    // A refused end wins over the branch highlight, and the highlight over a written color: the error is what
+    // needs fixing first, and the highlight is only on while typing.
+    const stroke = n.badEnd ? BAD : st ? st.stroke : col ? col.stroke : INK, sw = n.badEnd ? 3 : st ? st.w : 2;
+    const ink = col && !st && !n.badEnd ? col.stroke : INK;
+    const x0 = n.x - n.w / 2, y0 = n.y - h / 2;
+    // A written shape wins over the start/end look; wires meet every shape at its left and right middle.
+    const kind = n.shape ? (DRAW_AS[n.shape] || n.shape) : (n.role === 'start' ? 'pill' : n.role === 'end' ? 'flag' : 'rect');
+    const fill = st ? st.fill : col ? col.fill : (kind === 'pill' || kind === 'flag' ? '#eaf0ff' : '#fff');
+    if (interactive) o.push(`<g class="blk" data-ln="${n.ln}" data-idx="${n.idx}" style="cursor:pointer"><title>Click to change ${EE[n.shape] ? 'part' : 'shape'}</title>`);
+    if (EE[n.shape]) {
+      // A part has no body to fill, so a highlight shows as a soft patch behind it; a color tints the lines only.
+      if (st) o.push(`<rect x="${x0}" y="${y0}" width="${n.w}" height="${h}" rx="6" fill="${st.fill}"/>`);
+      // an invisible slot so a click anywhere on the part counts, not only on its thin lines
+      else if (interactive) o.push(`<rect x="${x0}" y="${y0}" width="${n.w}" height="${h}" fill="#fff" fill-opacity="0"/>`);
+      o.push(eeSymbolSVG(n.shape, x0, n.y, n.w, stroke, sw));
+      if (SHOW_EE_NAME) o.push(labelSVG(n.label, n.x, n.y - 24, ink, 13));
+      if (n.value) o.push(valueSVG(n.value, n.x, n.y + 25, ink));
+      if (n.badEnd) o.push(`<path d="M${x0 + 4} ${y0 + 4} L${x0 + n.w - 4} ${y0 + h - 4} M${x0 + n.w - 4} ${y0 + 4} L${x0 + 4} ${y0 + h - 4}" stroke="${BAD}" stroke-width="3.5" stroke-linecap="round" class="badx"/>`);
+      if (interactive) o.push('</g>');
+      continue;
+    }
+    o.push(shapeSVG(kind, x0, y0, n.w, h, fill, stroke, sw));
+    // a triangle is heavier at its flat left side, so its text sits left of centre
+    const tx = kind === 'tri' ? x0 + n.w * 0.38 : n.x;
+    if (n.value) {
+      o.push(valueSVG(n.value, tx, n.y, ink));
+      o.push(labelSVG(n.label, x0 + 2, y0 - 6, ink, 12).replace('text-anchor="middle"', 'text-anchor="start"'));
+    } else o.push(labelSVG(n.label, tx, n.y, ink));
+    // Drawn over the label on purpose: the block must read as refused, not merely recolored.
+    if (n.badEnd) o.push(`<path d="M${x0 + 4} ${y0 + 4} L${x0 + n.w - 4} ${y0 + h - 4} M${x0 + n.w - 4} ${y0 + 4} L${x0 + 4} ${y0 + h - 4}" stroke="${BAD}" stroke-width="3.5" stroke-linecap="round" class="badx"/>`);
+    if (interactive) o.push('</g>');
+  }
+  o.push('</svg>');
+  return o.join('\n');
+}
+
+// Node-side check: edges by label so a person can compare them to the sketch without reading ids.
+function edgeList(model) {
+  const nm = n => n.type === 'junction' ? 'J' + n.id : n.label;
+  return model.edges.map(([a, b]) => nm(model.nodes[a]) + ' -> ' + nm(model.nodes[b]));
+}
+// ==CORE-END==
+
+// The key that types * and \. The apostrophe replaced the period (Josue, 11/24) so a period types normally,
+// as in 4.7k; he may try other keys, so it lives in this one constant and the legend reads it.
+const HOTKEY = "'";
+// What the hotkey types after the text `before` on its line: the closing backslash inside an open element list,
+// nothing special inside an open [ ] value (so "don't" can be typed there), the opening asterisk otherwise.
+function hotkeyText(before) {
+  if (/^\s*\*[^\\]*$/.test(before)) return '\\';
+  let depth = 0;
+  if (before.includes('\\')) for (const ch of before.slice(before.indexOf('\\') + 1)) {
+    if (ch === '[') depth++; else if (ch === ']' && depth > 0) depth--;
+  }
+  return depth > 0 ? HOTKEY : '*';
+}
+
+if (typeof document !== 'undefined') {
+  const src = document.getElementById('src'), out = document.getElementById('out'), msgs = document.getElementById('msgs');
+  const bd = document.getElementById('bd'), bdIn = document.getElementById('bdIn');
+  let lastSVG = '';
+  const caretLine = () => src.value.slice(0, src.selectionStart).split('\n').length;
+  const cur = document.getElementById('cur'), waitsEl = document.getElementById('waits');
+
+  // The box mirrors the caret line (tabs hidden) unless the person is typing in it, and the chips list every
+  // wait still open, so the diagram can be watched with the script panel collapsed.
+  function syncBar(text) {
+    const ln = caretLine();
+    // Until a valid name line exists the box asks for the name, since nothing else is accepted yet.
+    const first = text.split('\n').find(l => l.trim());
+    cur.placeholder = first && /^\s*\*\s*[^,\\*]+\\\s*$/.test(first) ? '*A, B\\ branch wait' : '*Name\\   (name the schematic first)';
+    if (document.activeElement !== cur) cur.value = (text.split('\n')[ln - 1] || '').trimStart();
+    const w = openWaits(text, ln);
+    waitsEl.innerHTML = w.length
+      ? 'Open waits: ' + w.map(x => `<span class="chip${x.innermost ? ' in' : ''}" title="line ${x.ln}">wait: ${esc(x.text || 'line ' + x.ln)}</span>`).join('')
+      : 'No open waits';
+  }
+  function applyBar(r) {
+    src.value = r.text; src.setSelectionRange(r.caret, r.caret);
+    if (cur.value !== r.line) cur.value = r.line;
+    cur.setSelectionRange(r.barCaret, r.barCaret);
+    update();
+  }
+  // curJust and srcJust: the last keystroke wrote a shorthand letter out as a word (see backspaceWord).
+  let curJust = false, srcJust = false;
+  const isModifier = k => k === 'Shift' || k === 'Control' || k === 'Alt' || k === 'Meta';
+  cur.addEventListener('input', e => {
+    let v = cur.value, vc = cur.selectionStart;
+    const x = e.inputType === 'insertText' ? expandAtCaret(v, vc) : null;
+    if (x) { v = x.text; vc = x.caret; }
+    curJust = !!(x && x.undoable);
+    applyBar(barEdit(src.value, caretLine(), v, vc));
+  });
+  cur.addEventListener('keydown', e => {
+    if (!isModifier(e.key) && e.key !== 'Backspace') curJust = false;
+    if (e.key === 'Backspace' && !e.ctrlKey && !e.altKey && !e.metaKey && cur.selectionStart === cur.selectionEnd) {
+      const r = backspaceWord(cur.value, cur.selectionStart, curJust);
+      curJust = false;
+      if (r) { e.preventDefault(); applyBar(barEdit(src.value, caretLine(), cur.value.slice(0, r.from) + cur.value.slice(r.to), r.from)); return; }
+    }
+    // Same hotkey as the script editor.
+    if (e.key === HOTKEY && !e.ctrlKey && !e.metaKey && !e.altKey && cur.selectionStart === cur.selectionEnd) {
+      e.preventDefault();
+      document.execCommand('insertText', false, hotkeyText(cur.value.slice(0, cur.selectionStart)));
+    } else if (e.key === 'Enter') {
+      e.preventDefault(); applyBar(barEnter(src.value, caretLine()));
+    } else if (e.key === 'Backspace' && cur.value === '' && cur.selectionStart === 0) {
+      const r = barBack(src.value, caretLine());
+      if (r) { e.preventDefault(); applyBar(r); }
+    } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      // step the box to the neighbouring script line
+      const lines = src.value.split('\n'), ln = caretLine() + (e.key === 'ArrowUp' ? -1 : 1);
+      if (ln < 1 || ln > lines.length) return;
+      e.preventDefault();
+      let pos = 0; for (let i = 0; i < ln - 1; i++) pos += lines[i].length + 1;
+      pos += lines[ln - 1].length; src.setSelectionRange(pos, pos);
+      cur.value = lines[ln - 1].trimStart(); cur.setSelectionRange(cur.value.length, cur.value.length);
+      update();
+    }
+  });
+  ['focus', 'blur'].forEach(ev => cur.addEventListener(ev, update));
+
+  function update() {
+    const text = src.value;
+    const model = parse(text);
+    msgs.innerHTML = model.errors.map(e => `<div class="err">${esc(e)}</div>`).join('') +
+                     model.warnings.map(e => `<div class="warn">${esc(e)}</div>`).join('');
+    // The highlight only shows while the editor has focus; leaving it clears the colors.
+    const working = document.activeElement === src || document.activeElement === cur;
+    const hl = working ? highlightAt(text, caretLine()) : { lanes: new Map(), lines: new Map(), wait: null };
+    syncBar(text);
+    // A refused end is marked whether or not the editor has focus: it is an error, not a typing aid.
+    const bad = new Set(model.badEnds);
+    bdIn.innerHTML = text.split('\n').map((l, i) => {
+      const marks = [];
+      if (hl.wait && hl.wait.ln === i + 1) marks.push(hl.wait);
+      if (bad.has(i + 1)) { const r = endWordRange(l); if (r) marks.push(r); }
+      marks.sort((a, b) => a.from - b.from);
+      let body = '', at = 0;
+      for (const r of marks) {
+        if (r.from < at) continue;
+        body += esc(l.slice(at, r.from)) + '<span class="wb">' + esc(l.slice(r.from, r.to)) + '</span>';
+        at = r.to;
+      }
+      body += esc(l.slice(at));
+      return `<div class="bl ${hl.lines.get(i + 1) || ''}">${body || '&#8203;'}</div>`;
+    }).join('');
+    syncScroll();
+    // Errors are also shown in the bottom bar and here, so they are seen with the script panel collapsed.
+    const errsEl = document.getElementById('errs');
+    errsEl.textContent = model.errors.length ? model.errors[0] + (model.errors.length > 1 ? ` (and ${model.errors.length - 1} more)` : '') : '';
+    if (!model.nodes.length) {
+      out.innerHTML = model.errors.length
+        ? `<div class="empty err">${esc(model.errors[0])}</div>`
+        : '<div class="empty">Nothing to draw yet. Start by naming the schematic: press the apostrophe key, type a name, then press it again (for example *Schematic\\).</div>';
+      lastSVG = ''; return;
+    }
+    lastSVG = renderSVG(model); // clean copy for downloads: no click targets, no highlight, not zoomed
+    out.innerHTML = renderSVG(model, hl.lanes.size ? hl.lanes : undefined, true);
+    applyZoom();
+    try { localStorage.setItem('shorthand_schematic_v5b_src', text); } catch (e) {}
+  }
+  function syncScroll() { bdIn.style.transform = `translate(${-src.scrollLeft}px, ${-src.scrollTop}px)`; }
+  function download(name, blob) {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+  // Assigning .value wipes the browser's undo stack, so automatic edits go in as a typed replacement of only
+  // the changed span (execCommand), which keeps Ctrl+Z working through auto-tabbing and return conversion.
+  let applying = false;
+  function setText(t, c) {
+    const old = src.value;
+    if (t !== old) {
+      let a = 0;
+      while (a < old.length && a < t.length && old[a] === t[a]) a++;
+      let b = 0;
+      while (b < old.length - a && b < t.length - a && old[old.length - 1 - b] === t[t.length - 1 - b]) b++;
+      src.setSelectionRange(a, old.length - b);
+      applying = true;
+      const rep = t.slice(a, t.length - b);
+      const done = rep ? document.execCommand('insertText', false, rep) : document.execCommand('delete');
+      applying = false;
+      if (!done || src.value !== t) src.value = t; // fallback if the browser refuses the command
+    }
+    src.setSelectionRange(c, c);
+  }
+
+  src.addEventListener('input', e => {
+    if (applying) return;
+    let t = src.value, c = src.selectionStart;
+    // only a typed character or Enter writes a letter out; a paste keeps the script exactly as pasted
+    const x = (e.inputType === 'insertText' || e.inputType === 'insertLineBreak') ? expandAtCaret(t, c) : null;
+    if (x) { t = x.text; c = x.caret; }
+    srcJust = !!(x && x.undoable);
+    const r = convertReturnDigits(t, c); t = r.text; c = r.caret;
+    const sp = splitSequences(t, c), split = sp.text !== t; t = sp.text; c = sp.caret;
+    const before = t.slice(0, c).split('\n').pop();
+    // Re-tab when Enter is pressed, when the closing period of an element list is typed, and whenever a
+    // command word has just been completed.
+    if (split || e.inputType === 'insertLineBreak' || e.inputType === 'insertFromPaste' || e.inputType === 'insertFromDrop' || /^\s*\*[^\\]*\\$/.test(before) || /(^|[^\w^])(branch|wait|return(\^\d+)?)\s*$/i.test(before) || /(^|[^\w^])[bwr]\^?\d*\s*$/.test(before)) {
+      const q = reindentWithCaret(t, c); t = q.text; c = q.caret;
+    }
+    setText(t, c);
+    update();
+  });
+  // The hotkey: inside an open element list it types the closing backslash, anywhere else it types the
+  // opening asterisk (which then starts a new line if it follows a finished list).
+  src.addEventListener('keydown', e => {
+    if (!isModifier(e.key) && e.key !== 'Backspace') srcJust = false;
+    if (e.key === 'Backspace' && !e.ctrlKey && !e.altKey && !e.metaKey && src.selectionStart === src.selectionEnd) {
+      const r = backspaceWord(src.value, src.selectionStart, srcJust);
+      srcJust = false;
+      // the word goes as one typed deletion, so Ctrl+Z brings it back
+      if (r) { e.preventDefault(); src.setSelectionRange(r.from, r.to); document.execCommand('delete'); return; }
+    }
+    if (e.key === HOTKEY && !e.ctrlKey && !e.metaKey && !e.altKey && src.selectionStart === src.selectionEnd) {
+      const before = src.value.slice(0, src.selectionStart).split('\n').pop();
+      e.preventDefault();
+      document.execCommand('insertText', false, hotkeyText(before));
+      return;
+    }
+    if (e.key === 'Tab') { e.preventDefault(); document.execCommand('insertText', false, '   '); }
+  });
+  // Legend. The shorthand rows are read from SHORT so they cannot drift from what the parser accepts.
+  const helpDlg = document.getElementById('helpDlg');
+  const swatch = (inner, w) => `<svg width="${w || 56}" height="26" viewBox="0 0 ${w || 56} 26" aria-hidden="true">${inner}</svg>`;
+  const box = (extra, label) => `<rect x="3" y="3" width="50" height="20" ${extra} stroke-width="2"/><text x="28" y="18" text-anchor="middle" font-size="12" font-family="system-ui,sans-serif" fill="${INK}">${label}</text>`;
+  const row = (a, b) => `<tr><td>${a}</td><td>${b}</td></tr>`;
+  const code = t => `<code>${esc(t)}</code>`;
+  // a two-cell row inside a three-column table spans the last two columns
+  const wide = (a, b) => `<tr><td>${a}</td><td colspan="2">${b}</td></tr>`;
+  // Shorthand letter for a command word, read from SHORT so the legend follows the table.
+  const sh = w => Object.keys(SHORT).find(k => SHORT[k] === w);
+  const shLetter = v => Object.keys(SHAPE_WORDS).find(k => k.length === 1 && SHAPE_WORDS[k] === v);
+  const miniShape = kind => swatch(shapeSVG(kind, 6, 3, 44, 20, kind === 'pill' || kind === 'flag' ? '#eaf0ff' : '#fff', INK, 2), 56);
+  const letterCell = w => shLetter(w) ? code(shLetter(w)) : '&mdash;';
+  const shapeRows = [['rect', 'rect', 'Rectangle'], ['tri', 'tri', 'Triangle'], ['circ', 'circ', 'Circle'], ['dia', 'dia', 'Diamond (plain)'],
+    ['proc', 'rect', 'Process block'], ['dec', 'dia', 'Decision: a diamond that shows its value; a branch leaving it is labeled no, the path that carries on yes'],
+    ['io', 'io', 'Input or output (parallelogram)']]
+    .map(([w, k, name]) => `<tr><td>${code(w)}</td><td>${letterCell(w)}</td><td>${miniShape(k)} ${name}</td></tr>`).join('') +
+    `<tr><td>${code('auto')}</td><td>&mdash;</td><td>${miniShape('pill')} ${miniShape('flag')} Default: pill for the start, flag for the end, box otherwise</td></tr>`;
+  const cmdRow = (cmd, short, text) => `<tr><td>${code(cmd)}</td><td>${short}</td><td>${text}</td></tr>`;
+  document.getElementById('helpBody').innerHTML =
+    '<h3>Typing</h3><table>' +
+    row(code(HOTKEY), 'Hotkey: types <code>*</code> to open an element list, and <code>\\</code> to close an open one. Inside a bracketed value it types itself. You can type <code>*</code> and <code>\\</code> yourself instead. A period types normally.') +
+    row(code('*S, A\\ specifier'), 'One line: the elements in series, then the specifier.') +
+    row('Specifier', 'Everything after the closing <code>\\</code>. It specifies each element (shape, color, value) and then how the line behaves (<code>branch</code>, <code>wait</code>, <code>return</code>, <code>end</code>): the element is worked on before its location.') +
+    row('Groups', 'Semicolons split the specifier into groups, one property type each; inside a group the commas give one entry per element, in the order of the names. <code>*A, B\\ proc, dec; red, blue</code> makes A a red process block and B a blue decision. Group order does not matter and the last group needs no semicolon. The v4 form <code>*A, B\\ tri, rect, branch wait</code> still works.') +
+    row('Values', 'Text after <code>=</code>, shown inside the block with the name small above it: <code>*P1\\ proc = load data</code>. Several elements: <code>*A, B\\ proc = read, dec = x &gt; 10</code>. A value with commas or semicolons goes in square brackets: <code>dec = [x &gt; 10, y &lt; 3]</code>.') +
+    row('Colors', '<code>red</code> <code>orange</code> <code>yellow</code> <code>green</code> <code>blue</code> <code>purple</code> <code>pink</code> <code>gray</code> <code>black</code>: a light fill with the outline and text in that color. Can share an entry with a shape: <code>dec red = x &gt; 10</code>.') +
+    row('Start', 'The first element is always the start; there is no start word.') +
+    row(code('*Name\\'), 'First line, required before anything else: the diagram name, on its own (no commas, no commands). Elements such as <code>*A, B\\</code> on the first line are an error and nothing is drawn. The last line <code>*\\</code> ends the diagram.') +
+    row('One line', 'Each <code>*</code> after a finished list starts a new line, tabbed automatically. Typed spaces are ignored.') +
+    row('Letters to words', 'A small shorthand letter in the specifier is written out in capitals as soon as you type a space, comma or semicolon after it (or press Enter, or start the next list): <code>s</code> becomes <code>SERIES</code>, <code>t</code> becomes <code>TRI</code>, <code>r2</code> becomes <code>RETURN^2</code>. Backspace right after it takes the whole word back; Backspace at the end of any such word deletes the whole word. Letters in element names and in values are left alone, and so are the capital part codes (<code>R</code>, <code>VS</code>, ...). A pasted script is kept as pasted.') +
+    '</table><h3>Current line box and script panel</h3><table>' +
+    row('Current line', 'The box at the bottom edits the current script line (same hotkey and clean-up as the script). Enter starts a new line, Backspace on an empty box goes back a line, Up and Down move between lines.') +
+    row('Open waits', 'Red chips beside the box list every wait still open (the innermost is darker), so you can watch the diagram with the script hidden.') +
+    row('Script panel border', 'Drag the border to resize the panel (double-click resets it; with the border focused, the arrow keys also resize). The arrow button at the top of the border hides and shows the panel.') +
+    '</table><h3>Behavior commands and shorthand (tentative), written in the specifier after the shapes</h3><table>' +
+    '<tr><th>Command</th><th>Shorthand</th><th>Meaning</th></tr>' +
+    cmdRow('series', code(sh('series')), 'Optional label: lines are in series by default.') +
+    cmdRow('branch', code(sh('branch')), 'Elements leave the path and end there, with no return.') +
+    cmdRow('branch wait', code(sh('branch') + ' ' + sh('wait')), 'The branch stays open; the lines after it continue it in series.') +
+    cmdRow('return', code(sh('return')), 'Closes the open branch; it rejoins one level up.') +
+    cmdRow('return^2', code(sh('return') + '2'), 'Rejoins two levels up. Typing <code>return2</code> becomes <code>return^2</code>; <code>r2</code> becomes <code>RETURN^2</code>.') +
+    cmdRow('branch return', code(sh('branch') + ' ' + sh('return')), 'A closed branch whose return is pending.') +
+    cmdRow('end', '&mdash;', 'Marks the last element of the line as the end (spelled out: <code>e</code> is kept for powers in values). It must be the last element of its path: an end with anything after it, or written while a branch is waiting on its return, turns red, gets a red X and an error says why.') +
+    '</table><h3>Shapes and flow blocks (tentative): one per element in order, before the behavior</h3><table>' +
+    '<tr><th>Command</th><th>Shorthand</th><th>Shape</th></tr>' +
+    shapeRows +
+    '</table><p>Example: <code>*A, B\\ tri, rect, branch wait</code> makes A a triangle and B a rectangle, then the line branches and waits. The shapes come before the behavior. You can also click a block in the diagram to step through the shapes; the words are written into the script for you.</p>' +
+    '<h3>Circuit parts: drawn on the wire, in the same diagram as the blocks</h3><table>' +
+    '<tr><th>Code</th><th>Word</th><th>Part, and the unit its value is read in</th></tr>' +
+    // the word column is held narrow so the symbol and its description get the room
+    // the word is the longer name for a code, so a code's own lower-case spelling (vs for VS) is skipped
+    Object.keys(EE).map(k => `<tr><td>${code(k)}</td><td style="width:1%">${code(Object.keys(SHAPE_WORDS).find(w => w.length > 1 && w !== k.toLowerCase() && SHAPE_WORDS[w] === k))}</td><td>${swatch(eeSymbolSVG(k, 2, 13, 60, INK, 2), 64)} ${{ R: 'Resistor, ohms (Ω)', C: 'Capacitor, farads (F)', L: 'Inductor, henries (H)', VS: 'Voltage source, volts (V); + on the left', IS: 'Current source, amps (A); the arrow points along the path', DVS: 'Dependent voltage source, volts (V); an expression is shown as typed, in brackets when it has * (DVS = [2*Vx]), since a * otherwise starts a new line', DIS: 'Dependent current source, amps (A); an expression is shown as typed, in brackets when it has * (DIS = [0.5*Ix])', D: 'Diode, anode on the left; no unit, the value is shown as typed' }[k]}</td></tr>`).join('') +
+    wide('Values', '<code>*R1\\ R = 4.7k</code> shows 4.7 kΩ under the resistor; <code>*C1\\ C = 10u</code> shows 10 µF. The unit may be typed too: <code>4.7kΩ</code>, <code>4.7k ohm</code>, <code>10uF</code>. A power works: <code>4.7e3</code> shows 4.7 kΩ. Without <code>=</code> the part is drawn with no value. A value that is not a number is shown as typed.') +
+    wide('Prefixes', '<code>p</code> pico, <code>n</code> nano, <code>u</code> or <code>µ</code> micro, <code>m</code> milli, <code>k</code> kilo, <code>M</code> mega, <code>G</code> giga.') +
+    wide('Several parts', '<code>*R1, C1\\ R = 4.7k, C = 10u; red, blue</code>: one entry per part, as for blocks.') +
+    wide('Letter case', 'Single letters are case-sensitive: capitals are circuit parts (<code>R C L D</code>), small letters are shapes and commands (<code>c</code> circle, <code>d</code> decision, <code>r</code> return). So <code>C</code> is a capacitor and <code>c</code> a circle. Codes and words longer than one letter match in any case (<code>VS</code> or <code>vs</code>, <code>Branch</code>, <code>PROC</code>, <code>Resistor</code>).') +
+    wide('Click a part', `Steps through the parts (${Object.keys(EE).join(', ')}) and writes the code into the script; the value is kept.`) +
+    '</table>' +
+    '<h3>Diagram</h3><table>' +
+    row('<code>&minus;</code> <code>+</code>', 'Zoom out and in. The mouse wheel zooms around the pointer. The canvas is an endless white plane: drag anywhere on it to move the drawing as far as you like. The percent button fits and centers the whole drawing; press it again for 100% at the start corner. Downloads are not affected by zoom or position.') +
+    row('Click a block', 'Steps through its shapes and writes the word into the script (a drag never counts as a click).') +
+    '</table><h3>Rejoining</h3><p>A pending return rejoins after the last element of the next line on its target level. When several are pending for the same level, they rejoin in the order the branches were created.</p>' +
+    '<h3>Drawing</h3><table>' +
+    row(swatch(`<rect x="3" y="3" width="50" height="20" rx="10" fill="#eaf0ff" stroke="${INK}" stroke-width="2"/><text x="28" y="18" text-anchor="middle" font-size="12" font-family="system-ui,sans-serif" fill="${INK}">S</text>`), 'Start: the first element.') +
+    row(swatch(box('rx="3" fill="#fff" stroke="' + INK + '"', 'A')), 'Element in series.') +
+    row(swatch(`<polygon points="3,3 53,3 53,13 43,23 3,23" fill="#eaf0ff" stroke="${INK}" stroke-width="2"/><text x="26" y="18" text-anchor="middle" font-size="12" font-family="system-ui,sans-serif" fill="${INK}">E</text>`), 'End: the line marked <code>end</code>.') +
+    row(swatch(`<circle cx="28" cy="13" r="3.5" fill="${INK}"/>`), 'Junction where a branch leaves or rejoins.') +
+    '</table><h3>Highlights while you type</h3><table>' +
+    row(swatch(box(`rx="3" fill="${HL.strong.fill}" stroke="${HL.strong.stroke}"`, 'A')), 'Orange: the branch the current line closes or resolves (the oldest-created one).') +
+    row(swatch(box(`rx="3" fill="${HL.weak.fill}" stroke="${HL.weak.stroke}"`, 'A')), 'Light orange: other branches still waiting for a return or a rejoin.') +
+    row('<span style="background:rgba(229,56,59,.4);border-radius:8px;box-shadow:0 0 0 2px rgba(229,56,59,.4)">wait</span>', 'Red bubble: this branch is waiting for its return. Shown while you work on its level; hidden when you branch off from inside it and cleared once <code>return</code> is written.') +
+    '</table>';
+  document.getElementById('help').onclick = () => helpDlg.showModal();
+  document.getElementById('helpClose').onclick = () => helpDlg.close();
+  helpDlg.addEventListener('click', e => { if (e.target === helpDlg) helpDlg.close(); }); // click on the dimmed area
+  // Zoom scales the on-screen drawing only (the width and height of the svg; its viewBox keeps the shapes sharp).
+  const rightEl = document.getElementById('rightPanel'), zPct = document.getElementById('zPct');
+  let zoom = 1; try { zoom = Math.min(4, Math.max(0.25, +localStorage.getItem('shorthand_schematic_v5b_zoom') || 1)); } catch (e) {}
+  // The canvas is an endless white plane with no scroll bars. view is where the drawing's top-left corner sits on
+  // the plane, in screen pixels; it has no limits, so the drawing can be moved anywhere and zoomed around any point.
+  const HOME = { x: 40, y: 64 };
+  let view = { x: HOME.x, y: HOME.y };
+  function applyZoom() {
+    const sv = out.querySelector('svg');
+    if (sv && lastSVG) {
+      const w = +lastSVG.match(/width="(\d+)"/)[1], h = +lastSVG.match(/height="(\d+)"/)[1];
+      sv.setAttribute('width', w * zoom); sv.setAttribute('height', h * zoom);
+    }
+    out.style.transform = `translate(${view.x}px, ${view.y}px)`;
+    zPct.textContent = Math.round(zoom * 100) + '%';
+  }
+  // Zoom keeps the screen point (cx, cy), relative to the canvas, fixed on the same spot of the drawing.
+  function setZoom(z, cx, cy) {
+    const old = zoom;
+    zoom = Math.min(4, Math.max(0.25, z));
+    if (cx === undefined) { cx = rightEl.clientWidth / 2; cy = rightEl.clientHeight / 2; }
+    view.x = cx - (cx - view.x) * zoom / old;
+    view.y = cy - (cy - view.y) * zoom / old;
+    try { localStorage.setItem('shorthand_schematic_v5b_zoom', String(zoom)); } catch (e) {}
+    applyZoom();
+  }
+  document.getElementById('zIn').onclick = () => setZoom(zoom * 1.25);
+  document.getElementById('zOut').onclick = () => setZoom(zoom / 1.25);
+  // The percent button fits the whole drawing in view and centers it; pressed again it returns to 100% at the start corner.
+  document.getElementById('zFit').onclick = () => {
+    if (!lastSVG) return;
+    const w = +lastSVG.match(/width="(\d+)"/)[1], h = +lastSVG.match(/height="(\d+)"/)[1];
+    const fit = Math.min(4, Math.max(0.25, Math.min((rightEl.clientWidth - 80) / w, (rightEl.clientHeight - 120) / h)));
+    if (Math.abs(fit - zoom) < 0.01) { zoom = 1; view = { x: HOME.x, y: HOME.y }; }
+    else { zoom = fit; view = { x: (rightEl.clientWidth - w * fit) / 2, y: (rightEl.clientHeight - h * fit) / 2 + 20 }; }
+    try { localStorage.setItem('shorthand_schematic_v5b_zoom', String(zoom)); } catch (e) {}
+    applyZoom();
+  };
+  // The wheel zooms (a pinch gesture arrives as ctrl + wheel and zooms too) around the pointer.
+  rightEl.addEventListener('wheel', e => {
+    if (e.target.closest('#zoomBar')) return;
+    e.preventDefault();
+    const dy = Math.max(-120, Math.min(120, e.deltaY * (e.deltaMode === 1 ? 33 : 1)));
+    const r = rightEl.getBoundingClientRect();
+    setZoom(zoom * Math.exp(-dy * 0.002), e.clientX - r.left, e.clientY - r.top);
+  }, { passive: false });
+
+  // Drag anywhere on the canvas to move the drawing. A drag never counts as a click, so it cannot change a block's shape.
+  let pan = null;
+  rightEl.addEventListener('pointerdown', e => {
+    if (e.button !== 0 || e.target.closest('#zoomBar')) return;
+    // The block is read now, not at click time: pressing on the canvas blurs the script, which redraws the
+    // diagram before the button comes up, so the click itself would land on a replaced element and be lost.
+    const g = e.target.closest('.blk');
+    pan = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y, moved: false, id: e.pointerId,
+      blk: g ? { ln: +g.dataset.ln, idx: +g.dataset.idx } : null };
+  });
+  rightEl.addEventListener('pointermove', e => {
+    if (!pan) return;
+    const dx = e.clientX - pan.x, dy = e.clientY - pan.y;
+    if (!pan.moved && Math.abs(dx) + Math.abs(dy) < 5) return;
+    if (!pan.moved) { pan.moved = true; rightEl.setPointerCapture(pan.id); rightEl.classList.add('panning'); }
+    view.x = pan.vx + dx; view.y = pan.vy + dy;
+    applyZoom();
+  });
+  const endPan = e => {
+    // a press and release on a block without dragging steps its shape; a drag never does
+    const hit = pan && !pan.moved && pan.blk && e.type === 'pointerup' ? pan.blk : null;
+    pan = null; rightEl.classList.remove('panning');
+    if (hit) stepShape(hit.ln, hit.idx);
+  };
+  rightEl.addEventListener('pointerup', endPan);
+  rightEl.addEventListener('pointercancel', endPan);
+
+  // Step a block's shape; the matching word is written into that script line.
+  function stepShape(ln, idx) {
+    const text = src.value, model = parse(text);
+    const els = model.nodes.filter(n => n.type === 'el' && n.ln === ln).sort((a, b) => a.idx - b.idx);
+    if (!els[idx]) return;
+    const t = setShape(text, ln, idx, nextShape(els[idx]), els.map(n => n.role ? 'auto' : 'rect'));
+    if (t === text) return;
+    // keep the caret on the same line and column even though a line above it may have grown
+    const before = text.slice(0, src.selectionStart).split('\n'), cl = before.length - 1, col = before[cl].length;
+    const nl = t.split('\n');
+    let pos = 0; for (let i = 0; i < cl; i++) pos += nl[i].length + 1;
+    setText(t, pos + Math.min(col, (nl[cl] || '').length));
+    update();
+  }
+
+  // Collapse the script panel so the diagram gets the whole width; the choice is remembered per browser.
+  const mainEl = document.querySelector('main'), toggleBtn = document.getElementById('togglePanel');
+  function setCollapsed(on) {
+    mainEl.classList.toggle('collapsed', on);
+    // the chevron on the panel's border points the way the panel will move
+    toggleBtn.innerHTML = on ? '&rsaquo;' : '&lsaquo;';
+    const label = on ? 'Show script panel' : 'Hide script panel';
+    toggleBtn.title = label; toggleBtn.setAttribute('aria-label', label);
+    toggleBtn.setAttribute('aria-expanded', String(!on));
+    try { localStorage.setItem('shorthand_schematic_v5b_collapsed', on ? '1' : '0'); } catch (e) {}
+  }
+  toggleBtn.onclick = () => setCollapsed(!mainEl.classList.contains('collapsed'));
+  let wasCollapsed = false; try { wasCollapsed = localStorage.getItem('shorthand_schematic_v5b_collapsed') === '1'; } catch (e) {}
+  setCollapsed(wasCollapsed);
+
+  // The script panel's right border is a divider: drag it (or use the arrow keys) to set the panel width.
+  // The width is kept in pixels, between 140px and 70% of the page, and remembered per browser.
+  const divider = document.getElementById('divider'), leftEl = document.getElementById('leftPanel');
+  const stacked = () => window.matchMedia('(max-width:760px)').matches; // stacked layout has nothing to resize
+  const setLeftW = px => {
+    const w = Math.round(Math.max(140, Math.min(mainEl.getBoundingClientRect().width * 0.7, px)));
+    mainEl.style.setProperty('--leftw', w + 'px');
+    try { localStorage.setItem('shorthand_schematic_v5b_leftw', String(w)); } catch (e) {}
+  };
+  try { const w = +localStorage.getItem('shorthand_schematic_v5b_leftw'); if (w) mainEl.style.setProperty('--leftw', w + 'px'); } catch (e) {}
+  let dragging = false;
+  divider.addEventListener('pointerdown', e => {
+    if (e.button !== 0 || e.target.closest('#togglePanel') || stacked() || mainEl.classList.contains('collapsed')) return;
+    dragging = true; divider.setPointerCapture(e.pointerId); divider.classList.add('drag'); e.preventDefault();
+  });
+  divider.addEventListener('pointermove', e => { if (dragging) setLeftW(e.clientX - mainEl.getBoundingClientRect().left); });
+  const endDrag = () => { dragging = false; divider.classList.remove('drag'); };
+  divider.addEventListener('pointerup', endDrag);
+  divider.addEventListener('pointercancel', endDrag);
+  divider.addEventListener('dblclick', e => { // double-click goes back to the default width
+    if (e.target.closest('#togglePanel') || stacked()) return;
+    mainEl.style.removeProperty('--leftw');
+    try { localStorage.removeItem('shorthand_schematic_v5b_leftw'); } catch (err) {}
+  });
+  divider.addEventListener('keydown', e => {
+    if ((e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') || stacked() || mainEl.classList.contains('collapsed')) return;
+    e.preventDefault();
+    setLeftW(leftEl.getBoundingClientRect().width + (e.key === 'ArrowRight' ? 20 : -20));
+  });
+  src.addEventListener('scroll', syncScroll);
+  ['keyup', 'click', 'focus', 'blur'].forEach(ev => src.addEventListener(ev, update));
+  // moving the caret with the mouse ends the "just written out" state, as any other key does
+  src.addEventListener('mousedown', () => { srcJust = false; });
+  cur.addEventListener('mousedown', () => { curJust = false; });
+  // Text that arrives whole (examples, saved text, paste) is tabbed immediately, not only after the next keystroke.
+  const tidy = t => reindentWithCaret(t, 0).text;
+  document.getElementById('ex').onclick = () => { src.value = tidy(EXAMPLE); update(); };
+  document.getElementById('svg').onclick = () => { if (lastSVG) download('schematic.svg', new Blob([lastSVG], { type: 'image/svg+xml' })); };
+  document.getElementById('png').onclick = () => {
+    if (!lastSVG) return;
+    const img = new Image(), m = lastSVG.match(/width="(\d+)" height="(\d+)"/), s = 2;
+    img.onload = () => {
+      const c = document.createElement('canvas'); c.width = m[1] * s; c.height = m[2] * s;
+      const g = c.getContext('2d'); g.scale(s, s); g.drawImage(img, 0, 0);
+      c.toBlob(b => download('schematic.png', b));
+    };
+    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(lastSVG);
+  };
+  let saved = ''; try { saved = localStorage.getItem('shorthand_schematic_v5b_src') || ''; } catch (e) {}
+  src.value = tidy(saved || EXAMPLE);
+  src.setSelectionRange(src.value.length, src.value.length); // the box starts on the last line, ready to type
+  update();
+}
+</script>
+</body>
+</html>
