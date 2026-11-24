@@ -217,7 +217,7 @@ function parseV2(lines, partial, errors, warnings) {
   const main = { lane: 0, cursor: null, order: 0, lines: [], state: 'main' };
   // waiting[k] is the path at level k: the main path, then each branch that is still open.
   const waiting = [main];
-  const all = [], pending = [], levels = new Map(), info = new Map();
+  const all = [], pending = [], levels = new Map(), info = new Map(), badEnds = [];
   let laneCount = 1, orderCount = 1, first = true, title = 'Schematic', started = false;
 
   for (let i = 0; i < lines.length; i++) {
@@ -270,7 +270,9 @@ function parseV2(lines, partial, errors, warnings) {
       if (f.cursor) link(f.cursor, n);
       f.cursor = n; lastEl = n;
     }
-    if (cmd.end) lastEl.role = 'end';
+    // An end is refused while any branch still waits on its return: that branch could never rejoin. The
+    // check runs after this line's own commands, so a return that closes the last waiting branch may end.
+    const endHere = cmd.end;
 
     // A line on a path claims the oldest pending return aimed at that path, so no "meet" keyword is needed.
     const cand = pending.filter(p => !p.done && p.target === f).sort((a, b) => a.order - b.order)[0];
@@ -300,6 +302,14 @@ function parseV2(lines, partial, errors, warnings) {
         waiting.pop();
       }
     }
+    if (endHere) {
+      const open = waiting.slice(1);
+      if (open.length) {
+        const which = open.map(b => `line ${b.lines[0]}`).join(', ');
+        errors.push(`Line ${ln}: end is not allowed while ${open.length === 1 ? 'a branch is' : open.length + ' branches are'} waiting on a return (${which}). Write the return first.`);
+        lastEl.badEnd = true; badEnds.push(ln);
+      } else lastEl.role = 'end';
+    }
     info.set(ln, { lane: f.lane, before: top.lane, isBranch: cmd.branch, ret: cmd.ret, closedLane });
   }
 
@@ -322,8 +332,17 @@ function parseV2(lines, partial, errors, warnings) {
   }));
   return {
     mode: 'v2', title, nodes, edges, lanes: laneCount, errors, warnings,
-    levels, info, branches, waitingLanes: waiting.map(w => w.lane),
+    levels, info, branches, waitingLanes: waiting.map(w => w.lane), badEnds,
   };
+}
+
+// Where the end command sits in a line (the word or its letter), so the editor can mark it in red.
+function endWordRange(raw) {
+  const cs = specifierStart(raw);
+  const w = cs < 0 ? null : raw.slice(cs).match(/(^|[^\w^])(end|e)(?![\w^])/i);
+  if (!w) return null;
+  const from = cs + w.index + w[1].length;
+  return { from, to: from + w[2].length };
 }
 
 // Strength per lane for the branches that are still waiting on a return. The text is cut at the caret
@@ -524,6 +543,7 @@ function layout(model) {
 
 const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const INK = '#1b3a8a';
+const BAD = '#e5383b'; // same red as the wait bubble in the script, so the two read as one kind of warning
 const HL = { strong: { stroke: '#d9480f', fill: '#ffe8d9', w: 3 }, weak: { stroke: '#d98a1f', fill: '#fff4e0', w: 2.5 } };
 
 function labelSVG(label, x, y) {
@@ -570,7 +590,8 @@ function renderSVG(model, hl, interactive) {
   for (const n of nodes) {
     if (n.type === 'junction') { o.push(`<circle cx="${n.x}" cy="${n.y}" r="3.5" fill="${INK}"/>`); continue; }
     const st = hlOf(n) ? HL[hlOf(n)] : null;
-    const stroke = st ? st.stroke : INK, sw = st ? st.w : 2;
+    // A refused end wins over the branch highlight: the error is what needs fixing first.
+    const stroke = n.badEnd ? BAD : st ? st.stroke : INK, sw = n.badEnd ? 3 : st ? st.w : 2;
     const x0 = n.x - n.w / 2, y0 = n.y - h / 2;
     // A written shape wins over the start/end look; wires meet every shape at its left and right middle.
     const kind = n.shape || (n.role === 'start' ? 'pill' : n.role === 'end' ? 'flag' : 'rect');
@@ -579,6 +600,8 @@ function renderSVG(model, hl, interactive) {
     o.push(shapeSVG(kind, x0, y0, n.w, h, fill, stroke, sw));
     // a triangle is heavier at its flat left side, so its label sits left of centre
     o.push(labelSVG(n.label, kind === 'tri' ? x0 + n.w * 0.38 : n.x, n.y));
+    // Drawn over the label on purpose: the block must read as refused, not merely recolored.
+    if (n.badEnd) o.push(`<path d="M${x0 + 4} ${y0 + 4} L${x0 + n.w - 4} ${y0 + h - 4} M${x0 + n.w - 4} ${y0 + 4} L${x0 + 4} ${y0 + h - 4}" stroke="${BAD}" stroke-width="3.5" stroke-linecap="round" class="badx"/>`);
     if (interactive) o.push('</g>');
   }
   o.push('</svg>');
@@ -651,9 +674,20 @@ if (typeof document !== 'undefined') {
     const working = document.activeElement === src || document.activeElement === cur;
     const hl = working ? highlightAt(text, caretLine()) : { lanes: new Map(), lines: new Map(), wait: null };
     syncBar(text);
+    // A refused end is marked whether or not the editor has focus: it is an error, not a typing aid.
+    const bad = new Set(model.badEnds);
     bdIn.innerHTML = text.split('\n').map((l, i) => {
-      const w = hl.wait && hl.wait.ln === i + 1 ? hl.wait : null;
-      const body = w ? esc(l.slice(0, w.from)) + '<span class="wb">' + esc(l.slice(w.from, w.to)) + '</span>' + esc(l.slice(w.to)) : esc(l);
+      const marks = [];
+      if (hl.wait && hl.wait.ln === i + 1) marks.push(hl.wait);
+      if (bad.has(i + 1)) { const r = endWordRange(l); if (r) marks.push(r); }
+      marks.sort((a, b) => a.from - b.from);
+      let body = '', at = 0;
+      for (const r of marks) {
+        if (r.from < at) continue;
+        body += esc(l.slice(at, r.from)) + '<span class="wb">' + esc(l.slice(r.from, r.to)) + '</span>';
+        at = r.to;
+      }
+      body += esc(l.slice(at));
       return `<div class="bl ${hl.lines.get(i + 1) || ''}">${body || '&#8203;'}</div>`;
     }).join('');
     syncScroll();
@@ -754,7 +788,7 @@ if (typeof document !== 'undefined') {
     cmdRow('return', code(sh('return')), 'Closes the open branch; it rejoins one level up.') +
     cmdRow('return^2', code(sh('return') + '2'), 'Rejoins two levels up. Typing <code>return2</code> becomes <code>return^2</code>; <code>r2</code> is left as typed.') +
     cmdRow('branch return', code(sh('branch') + ' ' + sh('return')), 'A closed branch whose return is pending.') +
-    cmdRow('end', code(sh('end')), 'Marks the last element of the line as the end.') +
+    cmdRow('end', code(sh('end')), 'Marks the last element of the line as the end. Not allowed while a branch is waiting on its return: the word turns red, the block gets a red X and an error names the waiting line. Write the return first.') +
     '</table><h3>Shapes (tentative): written first in the specifier, one per element in order</h3><table>' +
     '<tr><th>Command</th><th>Shorthand</th><th>Shape</th></tr>' +
     shapeRows +
