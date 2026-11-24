@@ -1,9 +1,9 @@
 // node testV4.js -> shape commands, click-to-shape editing and shape drawing in shorthandSchematicV4.html
 const fs = require('fs'), vm = require('vm'), path = require('path');
-const page = fs.readFileSync(path.join(__dirname, '..', 'shorthandSchematicV4.html'), 'utf8');
+const page = fs.readFileSync(path.join(__dirname, '..', process.env.APP_FILE || 'shorthandSchematicV4.html'), 'utf8');
 const core = page.split('// ==CORE-START==')[1].split('// ==CORE-END==')[0];
 const ctx = {}; vm.createContext(ctx);
-vm.runInContext(core + ';this.A={parse,renderSVG,edgeList,setShape,nextShape,splitShapes,EXAMPLE}', ctx);
+vm.runInContext(core + ';this.A={parse,renderSVG,edgeList,setShape,nextShape,EXAMPLE}', ctx);
 const A = ctx.A;
 let fails = 0;
 const ok = (n, c, x) => { console.log((c ? 'PASS ' : 'FAIL ') + n + (x ? '  ' + x : '')); if (!c) fails++; };

@@ -1,6 +1,6 @@
 // node testNameFirst.js -> the schematic must be named first (shorthandSchematicV4.html)
 const fs = require('fs'), vm = require('vm'), path = require('path');
-const page = fs.readFileSync(path.join(__dirname, '..', 'shorthandSchematicV4.html'), 'utf8');
+const page = fs.readFileSync(path.join(__dirname, '..', process.env.APP_FILE || 'shorthandSchematicV4.html'), 'utf8');
 const core = page.split('// ==CORE-START==')[1].split('// ==CORE-END==')[0];
 const ctx = {}; vm.createContext(ctx);
 vm.runInContext(core + ';this.A={parse,barEdit,highlightAt,openWaits,EXAMPLE}', ctx);
