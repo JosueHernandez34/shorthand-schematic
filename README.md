@@ -31,7 +31,7 @@ current version. The git history keeps every step in between.
 ```
 
 Press the period key to type `*` and `\` (or type them yourself). The Help button in the app has the full legend.
-Shapes go first in the comment, one per element: `*A, B\ tri, rect, branch wait` (also `circ`, `dia`, letters `t x c d`).
+Shapes go first in the specifier (the text after the backslash), one per element: `*A, B\ tri, rect, branch wait` (also `circ`, `dia`, letters `t x c d`).
 Click a block in the diagram to step its shape; the word is written into the script.
 Shorthand (tentative): `s` series, `b` branch, `w` wait, `r` return, `r2` return^2, `e` end.
 

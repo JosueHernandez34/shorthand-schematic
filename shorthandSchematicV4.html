@@ -138,16 +138,16 @@ function parse(src, opts) {
 
 // Tolerates "return2" as well as "return^2" so the parser still works if the editor's
 // auto-conversion was bypassed (paste, another editor).
-// Element shapes are written first in the comment, one per element in order, before any location command:
+// Element shapes are written first in the specifier, one per element in order, before any location command:
 // "*A, B\ tri, rect, branch wait". A shape can be a word or a letter (tentative, like SHORT); "auto" keeps the
 // default look (pill for the start, flag for the end, plain box otherwise). Elements past the list get auto.
 const SHAPE_WORDS = { rect: 'rect', rectangle: 'rect', x: 'rect', tri: 'tri', triangle: 'tri', t: 'tri',
   circ: 'circ', circle: 'circ', c: 'circ', dia: 'dia', diamond: 'dia', d: 'dia', auto: 'auto' };
 // Wider than a box so the label still fits inside a triangle, circle or diamond.
 const SHAPE_WIDTH = { tri: 1.3, circ: 1.15, dia: 1.45 };
-function splitShapes(comment, n) {
+function splitShapes(specifier, n) {
   const shapes = [];
-  let rest = comment;
+  let rest = specifier;
   while (shapes.length < n) {
     const m = rest.match(/^\s*([A-Za-z]+)\s*(?:,|\s|$)/);
     const s = m && SHAPE_WORDS[m[1].toLowerCase()];
@@ -177,8 +177,8 @@ function setShape(text, ln, idx, shape, defaults) {
   while (list.length && (list[list.length - 1] === null || list[list.length - 1] === 'auto')) list.pop();
   const toks = list.map((s, i) => s || (defaults && defaults[i]) || 'rect');
   const rest = sp.rest.trim().replace(/^,\s*/, '');
-  const comment = [toks.join(', '), rest].filter(Boolean).join(', ');
-  lines[ln - 1] = m[1] + (comment ? ' ' + comment : '');
+  const specifier = [toks.join(', '), rest].filter(Boolean).join(', ');
+  lines[ln - 1] = m[1] + (specifier ? ' ' + specifier : '');
   return lines.join('\n');
 }
 
@@ -191,8 +191,8 @@ function expandShorthand(c) {
   });
 }
 
-function readCommands(comment) {
-  const c = expandShorthand(comment.toLowerCase());
+function readCommands(specifier) {
+  const c = expandShorthand(specifier.toLowerCase());
   const r = c.match(/\breturn\s*(?:\^\s*)?(\d+)?/);
   return {
     branch: /\bbranch\b/.test(c), wait: /\bwait\b/.test(c),
@@ -223,18 +223,18 @@ function parseV2(lines, partial, errors, warnings) {
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i];
     if (!raw.trim()) continue;
-    let body, comment, m = raw.match(LINE);
-    if (m) { body = m[1]; comment = m[2]; }
+    let body, specifier, m = raw.match(LINE);
+    if (m) { body = m[1]; specifier = m[2]; }
     else if (partial && i === lastIdx && (m = raw.match(OPEN))) {
       if (m[1] === '') continue; // only the opening asterisk so far
-      body = m[1]; comment = '';
-    } else { errors.push(`Line ${i + 1}: expected the form *elements\\ comment`); continue; }
+      body = m[1]; specifier = '';
+    } else { errors.push(`Line ${i + 1}: expected the form *elements\\ specifier`); continue; }
 
     const ln = i + 1;
     if (!started) {
       // The schematic must be named before anything else, so the first line may only be a name. Anything else
       // there (elements, an empty name, commands) is an error and nothing is drawn until it is fixed.
-      const why = body === '' ? 'the name is empty' : body.includes(',') ? 'it lists several elements' : comment.trim() ? 'it has commands after the name' : '';
+      const why = body === '' ? 'the name is empty' : body.includes(',') ? 'it lists several elements' : specifier.trim() ? 'it has commands after the name' : '';
       if (why) {
         errors.push(`Line ${ln}: name the schematic first (${why}). The first line is only its name, like *Schematic\\ , then add lines such as *A, B\\ below it.`);
         break;
@@ -244,7 +244,7 @@ function parseV2(lines, partial, errors, warnings) {
     if (body === '') break; // closing *\
     const els = body.split(',').map(s => s.trim()).filter(Boolean);
     if (!els.length) { errors.push(`Line ${ln}: no elements`); continue; }
-    const sh = splitShapes(comment, els.length); // shapes come first, then the location commands
+    const sh = splitShapes(specifier, els.length); // shapes come first, then the location commands
     const cmd = readCommands(sh.rest);
 
     const top = waiting[waiting.length - 1];
@@ -362,7 +362,7 @@ function highlightAt(src, caretLn) {
   const wb = m.branches.find(b => b.lane === top);
   if (top > 0 && !nested && wb && wb.state === 'waiting') {
     const ln = wb.lines[0], raw = src.split(/\r?\n/)[ln - 1];
-    const cs = commentStart(raw);
+    const cs = specifierStart(raw);
     const w = cs < 0 ? null : raw.slice(cs).match(/(^|[^\w^])(wait|w)(?![\w^])/i);
     if (w) { const from = cs + w.index + w[1].length; out.wait = { ln, from, to: from + w[2].length }; }
   }
@@ -370,7 +370,7 @@ function highlightAt(src, caretLn) {
 }
 
 // Index where the command part of a line starts (just after the closing delimiter), or -1.
-function commentStart(raw) {
+function specifierStart(raw) {
   const m = raw.match(/^\s*\*\s*[^\\]*?\s*\\\s*(.*)$/);
   return m ? raw.length - m[1].length : -1;
 }
@@ -738,14 +738,15 @@ if (typeof document !== 'undefined') {
   document.getElementById('helpBody').innerHTML =
     '<h3>Typing</h3><table>' +
     row(code('.'), 'Hotkey: types <code>*</code> to open an element list, and <code>\\</code> to close an open one. You can type <code>*</code> and <code>\\</code> yourself instead.') +
-    row(code('*S, A\\ comment'), 'One line: elements in series, then commands in the comment.') +
+    row(code('*S, A\\ specifier'), 'One line: the elements in series, then the specifier.') +
+    row('Specifier', 'Everything after the closing <code>\\</code>. It specifies the shape of each element (written first, one per element) and then how the line behaves (<code>branch</code>, <code>wait</code>, <code>return</code>, <code>end</code>): the element is worked on before its location.') +
     row(code('*Name\\'), 'First line, required before anything else: the diagram name, on its own (no commas, no commands). Elements such as <code>*A, B\\</code> on the first line are an error and nothing is drawn. The last line <code>*\\</code> ends the diagram.') +
     row('One line', 'Each <code>*</code> after a finished list starts a new line, tabbed automatically. Typed spaces are ignored.') +
     '</table><h3>Current line box and script panel</h3><table>' +
     row('Current line', 'The box at the bottom edits the current script line (same hotkey and clean-up as the script). Enter starts a new line, Backspace on an empty box goes back a line, Up and Down move between lines.') +
     row('Open waits', 'Red chips beside the box list every wait still open (the innermost is darker), so you can watch the diagram with the script hidden.') +
     row('Script panel border', 'Drag the border to resize the panel (double-click resets it; with the border focused, the arrow keys also resize). The arrow button at the top of the border hides and shows the panel.') +
-    '</table><h3>Commands and shorthand (tentative), typed after the closing backslash</h3><table>' +
+    '</table><h3>Behavior commands and shorthand (tentative), written in the specifier after the shapes</h3><table>' +
     '<tr><th>Command</th><th>Shorthand</th><th>Meaning</th></tr>' +
     cmdRow('series', code(sh('series')), 'Optional label: lines are in series by default.') +
     cmdRow('branch', code(sh('branch')), 'Elements leave the path and end there, with no return.') +
@@ -754,10 +755,10 @@ if (typeof document !== 'undefined') {
     cmdRow('return^2', code(sh('return') + '2'), 'Rejoins two levels up. Typing <code>return2</code> becomes <code>return^2</code>; <code>r2</code> is left as typed.') +
     cmdRow('branch return', code(sh('branch') + ' ' + sh('return')), 'A closed branch whose return is pending.') +
     cmdRow('end', code(sh('end')), 'Marks the last element of the line as the end.') +
-    '</table><h3>Shapes (tentative): written first in the comment, one per element in order</h3><table>' +
+    '</table><h3>Shapes (tentative): written first in the specifier, one per element in order</h3><table>' +
     '<tr><th>Command</th><th>Shorthand</th><th>Shape</th></tr>' +
     shapeRows +
-    '</table><p>Example: <code>*A, B\\ tri, rect, branch wait</code> makes A a triangle and B a rectangle, then the line branches and waits. The element comes before its location. You can also click a block in the diagram to step through the shapes; the words are written into the script for you.</p>' +
+    '</table><p>Example: <code>*A, B\\ tri, rect, branch wait</code> makes A a triangle and B a rectangle, then the line branches and waits. The shapes come before the behavior. You can also click a block in the diagram to step through the shapes; the words are written into the script for you.</p>' +
     '<h3>Diagram</h3><table>' +
     row('<code>&minus;</code> <code>+</code>', 'Zoom out and in. The mouse wheel zooms around the pointer. The canvas is an endless white plane: drag anywhere on it to move the drawing as far as you like. The percent button fits and centers the whole drawing; press it again for 100% at the start corner. Downloads are not affected by zoom or position.') +
     row('Click a block', 'Steps through its shapes and writes the word into the script (a drag never counts as a click).') +

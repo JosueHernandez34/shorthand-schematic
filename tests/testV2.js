@@ -116,7 +116,7 @@ ok('one line splits at every opening asterisk', sp.text.split('\n').length === V
 ok('split text parses to the same edges', same(V2.edgeList(V2.parse(sp.text)), V2.edgeList(a)));
 ok('caret stays at the end after splitting', sp.caret === sp.text.length);
 sp = V2.splitSequences('*T\\ *S, A\\ series *', 19);
-ok('typing an asterisk after a comment breaks the line, caret after it', sp.text === '*T\\\n*S, A\\ series\n*' && sp.caret === sp.text.length, JSON.stringify(sp));
+ok('typing an asterisk after a specifier breaks the line, caret after it', sp.text === '*T\\\n*S, A\\ series\n*' && sp.caret === sp.text.length, JSON.stringify(sp));
 sp = V2.splitSequences('*S, A\\ series', 5);
 ok('single sequence untouched', sp.text === '*S, A\\ series' && sp.caret === 5);
 sp = V2.splitSequences('*a * b\\ x', 3);

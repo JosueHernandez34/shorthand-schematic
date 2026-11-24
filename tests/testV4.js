@@ -63,7 +63,7 @@ ok('setting back to rect keeps the list', s2 === '*T\\\n*A, B\\ rect, rect, bran
 s2 = A.setShape('*T\\\n*A, B\\ tri', 2, 0, 'auto', ['auto', 'rect']);
 ok('auto on the only written shape clears the list', s2 === '*T\\\n*A, B\\', JSON.stringify(s2));
 s2 = A.setShape('*T\\\n*A, B\\', 2, 0, 'tri', ['auto', 'rect']);
-ok('line with no comment gets one', s2 === '*T\\\n*A, B\\ tri', JSON.stringify(s2));
+ok('line with no specifier gets one', s2 === '*T\\\n*A, B\\ tri', JSON.stringify(s2));
 ok('round trip: written text parses back to the same shape', nodeOf(A.setShape(t, 2, 1, 'dia', ['auto', 'rect']), 'B').shape === 'dia');
 let txt = t, seen = [];
 for (let i = 0; i < 5; i++) { const nx = A.nextShape(nodeOf(txt, 'B')); seen.push(nx); txt = A.setShape(txt, 2, 1, nx, ['auto', 'rect']); }
