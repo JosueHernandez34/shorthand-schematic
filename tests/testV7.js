@@ -161,6 +161,24 @@ m = P('*A, B\\ [PROC, BRANCH], DIA');
 ok('a command inside brackets is an error', has(m.errors, /"BRANCH" in \[PROC, BRANCH\] is not a specifier for one element/), show(m));
 ok('NULL and END type out in capitals', ex('*A\\ null ') === '*A\\ NULL ' && ex('*A\\ x, end,') === '*A\\ x, END,');
 
+// typing aids (Josue, 11/25): a space in an element list types ", "; Enter in the specifier opens and closes brackets
+vm.runInContext('this.A.enterAt = enterAt', ctx);
+const H = '*T\\\n';
+const sp = t => { const x = A.expand(t, t.length); return x ? x.text : t; };
+const en = t => { const r = A.enterAt(t, t.length); return r ? r.text : null; };
+ok('a space after a name in a list types a comma and a space', sp(H + '*A ') === H + '*A, ' && sp(H + '*A, R_1 ') === H + '*A, R_1, ');
+ok('not on the name line, not after a comma, not in the specifier', sp('*My ') === '*My ' && sp(H + '*A, ') === H + '*A, ' && sp(H + '*A\\ PROC ') === H + '*A\\ PROC ');
+ok('the bottom box passes which line it is on', (A.expand('*A ', 3, true) || {}).text === '*A, ' && !A.expand('*A ', 3, false));
+ok('Enter after a list that ends in the typed comma drops it and opens the specifier', en(H + '*A, B, ') === H + '*A, B\\ ', JSON.stringify(en(H + '*A, B, ')));
+ok('Enter right after the backslash opens a bracket', en(H + '*A, B\\ ') === H + '*A, B\\ [', JSON.stringify(en(H + '*A, B\\ ')));
+ok('Enter inside a bracket closes it with "], "', en(H + '*A, B\\ [BLUE, PROC = cool down') === H + '*A, B\\ [BLUE, PROC = cool down], ', JSON.stringify(en(H + '*A, B\\ [BLUE, PROC = cool down')));
+ok('Enter right after "], " drops the comma and starts the next line', en(H + '*A, B\\ [BLUE, PROC = cool down], ') === H + '*A, B\\ [BLUE, PROC = cool down]\n*', JSON.stringify(en(H + '*A, B\\ [BLUE, PROC = cool down], ')));
+ok('Enter after a plain comma opens the next element\'s bracket', en(H + '*A, B\\ PROC, ') === H + '*A, B\\ PROC, [', JSON.stringify(en(H + '*A, B\\ PROC, ')));
+ok('Enter after a word still starts the next line', en(H + '*A, B\\ PROC, DIA') === H + '*A, B\\ PROC, DIA\n*', JSON.stringify(en(H + '*A, B\\ PROC, DIA')));
+ok('words inside an element bracket are written out in capitals too', ex('*A\\ [blue,') === '*A\\ [BLUE,' && ex('*A\\ [BLUE, proc ') === '*A\\ [BLUE, PROC ' && ex('*A\\ x, [res ') === '*A\\ x, [RES ');
+ok('but not inside a value, bracketed or not', ex('*A\\ [PROC = red ') === '*A\\ [PROC = red ' && ex('*A\\ DEC = [x, end ') === '*A\\ DEC = [x, end ' && ex('*A\\ [DEC = [x, blue ') === '*A\\ [DEC = [x, blue ');
+ok('a whole line typed with the aids parses clean', (() => { const q = A.parse(H + '*A, B\\ [BLUE, PROC = cool down], DIA\n*\\'); return !q.errors.length && !q.warnings.length && byLabel(q, 'A').color === 'blue'; })());
+
 // diagrams that are not circuits are left alone
 m = P('*A, B\\ proc, io');
 ok('a flow diagram has no circuit notes', !m.errors.length && !m.warnings.length && !m.circuit, show(m));

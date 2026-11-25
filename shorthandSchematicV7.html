@@ -550,23 +550,32 @@ function wordFor(tok) {
 function inSpecifier(linePrefix) {
   const m = linePrefix.match(/^\s*\*[^\\]*\\/);
   if (!m) return false;
-  let depth = 0, inVal = false;
+  // A bracket opened after = is a value; one opened at the start of an entry holds that element's specifiers
+  // (Josue, 11/25), and inside it the words are written out like anywhere else in the specifier.
+  const stack = []; let inVal = false;
   for (const ch of linePrefix.slice(m[0].length)) {
-    if (ch === '[') depth++;
-    else if (ch === ']' && depth > 0) depth--;
-    else if (depth === 0) { if (ch === '=') inVal = true; else if (ch === ',' || ch === ';') inVal = false; }
+    if (stack.includes('value')) { if (ch === '[') stack.push('value'); else if (ch === ']') stack.pop(); continue; }
+    if (ch === '[') { stack.push(inVal ? 'value' : 'entry'); continue; }
+    if (ch === ']' && stack.length) { stack.pop(); inVal = false; continue; }
+    if (ch === '=') inVal = true; else if (ch === ',' || ch === ';') inVal = false;
   }
-  return depth === 0 && !inVal;
+  return !stack.includes('value') && !inVal;
 }
 
 // Called after a character is typed at caret - 1. Returns the new text and caret, or null when nothing changes.
 // undoable says the trigger was a space, comma or semicolon, so an immediate Backspace may take the word back.
-function expandAtCaret(text, caret) {
+function expandAtCaret(text, caret, listLine) {
   const trig = text[caret - 1];
   if (!trig || !' ,;*\n'.includes(trig)) return null;
   const ls = text.lastIndexOf('\n', caret - 2) + 1;
   const before = text.slice(ls, caret - 1);
-  const m = before.match(/(^|[\s,;])((?:return|r)\^?\d+|[A-Za-z_]{1,13})$/);
+  // A space after a name in an element list types ", " (Josue, 11/25), so names are listed without typing commas.
+  // Not on the name line, whose name may hold spaces; listLine says which line this is when the text is only the
+  // current line (the bottom box), otherwise it is any line after the first one written.
+  const isList = listLine === undefined ? !!text.slice(0, ls).trim() : listLine;
+  if (trig === ' ' && isList && /^\s*\*[^\\]*[\w^)\]]$/.test(before))
+    return { text: text.slice(0, caret - 1) + ', ' + text.slice(caret), caret: caret + 1, undoable: false };
+  const m = before.match(/(^|[\s,;[])((?:return|r)\^?\d+|[A-Za-z_]{1,13})$/); // [ too: a word may open an element bracket
   if (!m) return null;
   const tok = m[2], word = wordFor(tok);
   if (!word || word === tok) return null;
@@ -581,8 +590,8 @@ function expandAtCaret(text, caret) {
 function backspaceWord(text, caret, just) {
   const ls = text.lastIndexOf('\n', caret - 1) + 1;
   const before = text.slice(ls, caret);
-  const m = (just && before.match(new RegExp('(^|[\\s,;])(' + EXPANDED.source + ')[ ,;]$')))
-    || before.match(new RegExp('(^|[\\s,;])(' + EXPANDED.source + ')$'));
+  const m = (just && before.match(new RegExp('(^|[\\s,;[])(' + EXPANDED.source + ')[ ,;]$')))
+    || before.match(new RegExp('(^|[\\s,;[])(' + EXPANDED.source + ')$'));
   if (!m) return null;
   const from = caret - (m[0].length - m[1].length);
   if (!inSpecifier(text.slice(ls, from))) return null;
@@ -1393,12 +1402,21 @@ function enterAt(text, caret) {
   if (open) {
     if (firstLine) return at('\\\n*');             // the name line: close it and go on
     if (!open[1].trim()) return at('\\');           // a bare *: this closes the diagram
+    if (/,$/.test(before)) { const t = text.slice(0, cut - 1) + '\\ ' + text.slice(le); return tidy(t, cut + 1); } // the comma a space typed
     return at('\\ ');                               // an element list: on to its specifier
   }
   if (/^\s*\*\s*\\$/.test(before)) return null;     // the closing *\ itself
-  let depth = 0; // inside an open [ ] value Enter is part of the value
-  for (const ch of before.slice(before.indexOf('\\') + 1)) { if (ch === '[') depth++; else if (ch === ']' && depth > 0) depth--; }
-  if (depth > 0 || !before.includes('\\')) return null;
+  if (!before.includes('\\')) return null;
+  // In the specifier (Josue, 11/25): Enter at the start of an entry (right after the backslash, or after a comma)
+  // opens a bracket for that element; inside a bracket it closes it with "], " ready for the next element; right
+  // after that, the dangling comma goes and the next line starts. After a word that is not in a bracket it still
+  // starts the next line.
+  const spec = before.slice(before.indexOf('\\') + 1);
+  let depth = 0;
+  for (const ch of spec) { if (ch === '[') depth++; else if (ch === ']' && depth > 0) depth--; }
+  if (depth > 0) return at(']'.repeat(depth) + ', ');
+  if (/\],$/.test(spec)) { const t = text.slice(0, cut - 1) + '\n*' + text.slice(le); return tidy(t, cut + 1); }
+  if (!spec.trim() || /,$/.test(spec)) return at(' [');
   return at('\n*');
 }
 
@@ -1731,7 +1749,8 @@ if (typeof document !== 'undefined') {
   const isModifier = k => k === 'Shift' || k === 'Control' || k === 'Alt' || k === 'Meta';
   cur.addEventListener('input', e => {
     let v = cur.value, vc = cur.selectionStart;
-    const x = e.inputType === 'insertText' ? expandAtCaret(v, vc) : null;
+    const nameLn = src.value.split('\n').findIndex(l => l.trim()) + 1;
+    const x = e.inputType === 'insertText' ? expandAtCaret(v, vc, caretLine() > nameLn) : null;
     if (x) { v = x.text; vc = x.caret; }
     curJust = !!(x && x.undoable);
     applyBar(barEdit(src.value, caretLine(), v, vc));
