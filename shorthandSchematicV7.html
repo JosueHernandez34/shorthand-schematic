@@ -358,10 +358,51 @@ function splitTop(s, sep) {
 }
 
 // The specifier is semicolon groups; in each group the commas give one entry per element, in the order of the
-// names. An entry holds bare words (shape, color) and an optional "= value". Group order does not matter because
-// each entry is recognized by its words. The first word that is not a property starts the behavior part, and
-// everything after it in that group is behavior or comment: that keeps the v4 form "tri, circ, branch wait"
-// and the v4 rule that a shape word after a command is not a shape.
+// names. Entries in one group need not be the same kind (Josue, 11/25): each is recognized by its own words, so
+// "PROC, RED, MEAS V" gives a shape, a color and a marker to three elements. An entry holds bare words (shape, color,
+// REV, MEAS, END, NULL) and an optional "= value". NULL fills a place to skip an element ("NULL, END" ends the
+// second). Several specifiers for one element go in brackets, "[BLUE PROC = cool down, MEAS I]", so a group need not
+// be restarted with a semicolon; a bracket after = is still a value. The first word that is not a property starts the
+// behavior part, and everything after it in that group is behavior or comment: that keeps the v4 form
+// "tri, circ, branch wait" and the v4 rule that a shape word after a command is not a shape.
+function readEntry(entry) {
+  const eq = entry.indexOf('=');
+  const words = (eq < 0 ? entry : entry.slice(0, eq)).trim().split(/\s+/).filter(Boolean);
+  const p = {}; let used = 0, bad = null;
+  for (let wi = 0; wi < words.length; wi++) {
+    const w = words[wi], lw = w.toLowerCase();
+    if (shapeOf(w) && !p.shape) p.shape = shapeOf(w);
+    else if (w.length > 1 && COLORS[lw] && !p.color) p.color = lw;
+    else if (lw === 'rev' && !p.rev) p.rev = true;
+    // END marks the element it is paired with (Josue, 11/25), so it is an element property like a shape
+    else if (lw === 'end' && !p.end) p.end = true;
+    else if (lw === 'null') p.skip = true;
+    else if (lw === 'meas' && !p.meas) { // MEAS takes a quantity and a form after it, in either order
+      let q = null;
+      for (let k = 0, nx; k < 2 && (nx = words[wi + 1]); k++) {
+        if (measOf(nx) && !q) q = measOf(nx);
+        else if (formOf(nx) && !p.measForm) p.measForm = formOf(nx);
+        else break;
+        wi++; used++;
+      }
+      p.meas = q || 'V';
+    }
+    else if (OLD_RECT(w) && !p.shape && !p.oldRect) p.oldRect = w;
+    else break;
+    used++;
+  }
+  if (used === words.length && eq >= 0) {
+    p.value = unbracket(entry.slice(eq + 1).trim());
+    // The value belongs to the word right before = (Josue, 11/25): PROC = cool down, never PROC BLUE = cool down,
+    // where it would read as BLUE's value. Only a shape or a part takes one. It is still shown, with an error.
+    const last = words[words.length - 1];
+    if (last && !shapeOf(last) && !OLD_RECT(last)) {
+      const sw = words.find(x => shapeOf(x));
+      bad = { kind: 'value', entry, last, fix: sw ? [...words.filter(x => x !== sw), sw].join(' ') + ' = ' + entry.slice(eq + 1).trim() : null };
+    }
+  }
+  return { p, used, words, eq, bad };
+}
 function readSpecifier(specifier, n) {
   const props = Array.from({ length: n }, () => ({}));
   const cmds = [], issues = [];
@@ -371,43 +412,31 @@ function readSpecifier(specifier, n) {
     for (const raw of splitTop(group, ',')) {
       const entry = raw.trim();
       if (inCmds) { cmds.push(entry); continue; }
-      if (!entry) { k++; continue; } // an empty entry skips that element
-      const eq = entry.indexOf('=');
-      const words = (eq < 0 ? entry : entry.slice(0, eq)).trim().split(/\s+/).filter(Boolean);
-      const p = {}; let used = 0;
-      for (let wi = 0; wi < words.length; wi++) {
-        const w = words[wi], lw = w.toLowerCase();
-        if (shapeOf(w) && !p.shape) p.shape = shapeOf(w);
-        else if (w.length > 1 && COLORS[lw] && !p.color) p.color = lw;
-        else if (lw === 'rev' && !p.rev) p.rev = true;
-        else if (lw === 'meas' && !p.meas) { // MEAS takes a quantity and a form after it, in either order
-          let q = null;
-          for (let k = 0, nx; k < 2 && (nx = words[wi + 1]); k++) {
-            if (measOf(nx) && !q) q = measOf(nx);
-            else if (formOf(nx) && !p.measForm) p.measForm = formOf(nx);
-            else break;
-            wi++; used++;
-          }
-          p.meas = q || 'V';
+      if (!entry) { k++; continue; } // an empty entry skips that element, like NULL
+      let p;
+      if (/^\[[\s\S]*\]$/.test(entry)) {
+        // a bracketed entry: every specifier in it is for this one element
+        p = {};
+        for (const sub of splitTop(entry.slice(1, -1), ',').map(x => x.trim()).filter(Boolean)) {
+          const r = readEntry(sub);
+          if (r.bad) issues.push(r.bad);
+          if (r.used < r.words.length) issues.push({ kind: 'unknown', entry, word: r.words[r.used] });
+          // one element has one shape and one color; a second would silently win, so it is refused
+          for (const key of ['shape', 'color']) if (r.p[key] && p[key]) issues.push({ kind: 'twice', entry, key });
+          Object.assign(p, r.p);
         }
-        else if (OLD_RECT(w) && !p.shape && !p.oldRect) p.oldRect = w;
-        else break;
-        used++;
-      }
-      if (used < words.length) { // behavior words: the rest of the entry and of the group
-        cmds.push(words.slice(used).join(' ') + (eq < 0 ? '' : ' ' + entry.slice(eq)));
-        inCmds = true;
-      } else if (eq >= 0) {
-        p.value = unbracket(entry.slice(eq + 1).trim());
-        // The value belongs to the word right before = (Josue, 11/25): PROC = cool down, never PROC BLUE = cool down,
-        // where it would read as BLUE's value. Only a shape or a part takes one. It is still shown, with an error.
-        const last = words[words.length - 1];
-        if (last && !shapeOf(last) && !OLD_RECT(last)) {
-          const sw = words.find(x => shapeOf(x));
-          issues.push({ kind: 'value', entry, last, fix: sw ? [...words.filter(x => x !== sw), sw].join(' ') + ' = ' + entry.slice(eq + 1).trim() : null });
+      } else {
+        const r = readEntry(entry);
+        if (r.used < r.words.length) { // behavior words: the rest of the entry and of the group
+          cmds.push(r.words.slice(r.used).join(' ') + (r.eq < 0 ? '' : ' ' + entry.slice(r.eq)));
+          inCmds = true;
+          continue;
         }
+        if (r.bad) issues.push(r.bad);
+        p = r.p;
       }
-      if (used || eq >= 0) { if (k < n) Object.assign(props[k], p); else over.push(entry); k++; }
+      if (k < n) Object.assign(props[k], p); else if (!p.skip) over.push(entry);
+      k++;
     }
     // Entries and elements pair up one to one inside a group (Josue, 11/25). A group that only holds a command has no
     // entries (k is 0) and is left alone; otherwise more entries than elements, or fewer, is reported by the caller.
@@ -437,7 +466,7 @@ function setShape(text, ln, idx, shape, defaults) {
   const m = (lines[ln - 1] || '').match(/^(\s*\*\s*([^\\]*?)\s*\\)\s*(.*)$/);
   if (!m) return text;
   const groups = splitTop(m[3], ';');
-  const isProp = e => { const r = readSpecifier(e, 1); return !r.rest.trim() && Object.keys(r.props[0]).length > 0; };
+  const isProp = e => { const r = readSpecifier(e, 1); return !r.rest.trim() && Object.keys(r.props[0]).some(k => k !== 'end' && k !== 'skip'); }; // an END or NULL group is not where a clicked shape goes
   const fill = i => (defaults && defaults[i]) || 'auto';
   let gi = groups.findIndex(g => isProp(splitTop(g, ',')[0].trim()));
   let entries, tail;
@@ -504,7 +533,7 @@ const CMD_WORDS = ['series', 'branch', 'return', 'wait', 'end'];
 const COLOR_WORDS = Object.keys(COLORS).map(c => c.toUpperCase());
 // Every other specifier word too (Josue, 11/25): the shapes (PROC, DEC, IO, TRI, CIRC, DIA, AUTO and their long
 // forms), the part words, MEAS, REV and the AC forms. They are only rewritten as capitals; the parser reads any case.
-const OTHER_WORDS = ['meas', 'rev', 'pole', 'polar', 'rect', 'rectangular', 'sine', 'sinusoidal', 'voltage', 'current'];
+const OTHER_WORDS = ['null', 'meas', 'rev', 'pole', 'polar', 'rect', 'rectangular', 'sine', 'sinusoidal', 'voltage', 'current'];
 const SPEC_WORDS = new Set([...Object.keys(SHAPE_WORDS).filter(k => k.length > 1), ...OTHER_WORDS, ...Object.values(CODE_WORDS).map(w => w.toLowerCase())]);
 const EXPANDED = new RegExp('(?:' + [...new Set([...Object.values(LETTER_WORDS), ...Object.values(CODE_WORDS), 'END', ...COLOR_WORDS, ...[...SPEC_WORDS].map(w => w.toUpperCase())])].join('|') + '|RETURN\\^\\d+)');
 // The word a typed token is written out as: a small letter, r2, or a part code (a one-letter code exactly as typed,
@@ -615,6 +644,11 @@ function parseV2(lines, partial, errors, warnings) {
     if (!els.length) { errors.push(`Line ${ln}: no elements`); continue; }
     const sp = readSpecifier(specifier, els.length); // element properties, then the location commands
     for (const g of sp.issues) {
+      if (g.kind === 'twice') { errors.push(`Line ${ln}: ${g.entry} gives one element two ${g.key}s. Keep one.`); continue; }
+      if (g.kind === 'unknown') {
+        errors.push(`Line ${ln}: "${g.word}" in ${g.entry} is not a specifier for one element. Brackets hold shapes, colors, values, REV, MEAS, END and NULL; commands such as BRANCH go in their own group.`);
+        continue;
+      }
       if (g.kind === 'value') {
         errors.push(`Line ${ln}: in "${g.entry}" the value follows ${g.last}, but only a shape or a part takes a value. ` + (g.fix ? `Write it right after the shape: ${g.fix}.` : 'Add one before =, like PROC = ...'));
         continue;
@@ -670,6 +704,9 @@ function parseV2(lines, partial, errors, warnings) {
       const n = addNode({ type: 'el', label, lane: f.lane, shape, ln, idx: i, value, color: p.color,
         rev: !!(p.rev && DIRECTIONAL.has(shape)), meas, measForm: p.measForm, raw: p.value, w: Math.round(w) });
       if (first) { n.role = 'start'; first = false; }
+      // END on the last element of the line is the line's end, with its checks below; on an earlier element it
+      // marks that element, and the end rule then refuses it because the path goes on
+      if (p.end) { if (i === els.length - 1) cmd.end = true; else n.role = 'end'; }
       if (f.cursor) link(f.cursor, n);
       f.cursor = n; lastEl = n;
     }
@@ -1898,7 +1935,7 @@ if (typeof document !== 'undefined') {
     wide('Prefixes', '<code>p</code> pico, <code>n</code> nano, <code>u</code> or <code>µ</code> micro, <code>m</code> milli, <code>k</code> kilo, <code>M</code> mega, <code>G</code> giga.') +
     wide('Direction', 'Parts with a direction (<code>VS</code> <code>IS</code> <code>DVS</code> <code>DIS</code> <code>VAC</code> <code>IAC</code> <code>D</code>) are drawn negative to positive along the path, so current flows left to right. Write <code>REV</code> in the entry of a part to reverse it: <code>*V1\\ VS REV = 5</code> is a 5 V source drawn positive to negative. On other parts <code>REV</code> is ignored with a warning.') +
     wide('Measure', 'Write <code>MEAS V</code> (shorthand <code>m</code>) in the entry of a part to mark the voltage across it, <code>MEAS I</code> for the current through it; <code>MEAS</code> alone means V. <code>*R_1\\ RES = 4.7k; MEAS V</code> draws <code>+ V &minus;</code> over the resistor, + where the current enters (left, or right on a part marked <code>REV</code>); <code>MEAS I</code> draws an arrow the way the current flows. The solver fills in the number (see Simulation); an AC reading takes a form after <code>MEAS</code>: <code>POLE</code>, <code>RECT</code> or <code>SINE</code> (see AC). A source cannot measure its own quantity (no <code>MEAS V</code> on a voltage source, no <code>MEAS I</code> on a current source): that is an error. On a flow block <code>MEAS</code> is ignored with a warning.') +
-    wide('Ground and checks', 'Nothing is grounded unless you write it: put <code>GND</code> where 0 V is, one <code>GND</code> first or last on the path is enough, because it joins both ends of the circuit (<code>*V1, R1, GND\\ VS = 5, RES = 1k, GND; MEAS I,</code>); a <code>GND</code> in the middle is only a reference point, and two or more are written out where you want them. Entries and elements pair up one to one in a group: more entries than elements is an error, fewer a warning (end the group with a bare comma to skip on purpose). A circuit with <code>MEAS</code> and no <code>GND</code> is an error. Before solving, the circuit is checked: errors (red X on the parts, no readings) for a loop of only voltage sources and inductors, a node touching only current sources, a repeated part name, and a measured part on a dead-end branch; warnings (amber, still solved) for an open end, a part with both ends on the same node, a group not connected to <code>GND</code>, and more than two <code>GND</code> points.') +
+    wide('Ground and checks', 'Nothing is grounded unless you write it: put <code>GND</code> where 0 V is, one <code>GND</code> first or last on the path is enough, because it joins both ends of the circuit (<code>*V1, R1, GND\\ VS = 5, RES = 1k, GND; MEAS I,</code>); a <code>GND</code> in the middle is only a reference point, and two or more are written out where you want them. Entries and elements pair up one to one in a group: more entries than elements is an error, fewer a warning (<code>NULL</code> or a bare comma skips one on purpose). Entries need not be the same kind, and <code>END</code> pairs up like the rest: <code>*DONE, OFF\\ PINK, BLACK; NULL, END</code> ends OFF. Brackets hold several specifiers for one element: <code>[BLUE, PROC = cool down]</code>. A circuit with <code>MEAS</code> and no <code>GND</code> is an error. Before solving, the circuit is checked: errors (red X on the parts, no readings) for a loop of only voltage sources and inductors, a node touching only current sources, a repeated part name, and a measured part on a dead-end branch; warnings (amber, still solved) for an open end, a part with both ends on the same node, a group not connected to <code>GND</code>, and more than two <code>GND</code> points.') +
     wide('Simulation', 'When a part has <code>MEAS</code>, the circuit is solved for DC and the marker shows the reading, for example <code>+ 5 V &minus;</code>. CAP is open and IND is a short in DC; DIODE follows the Shockley equation. A dependent source takes <code>[gain*V(name)]</code> or <code>[gain*I(name)]</code> of another part, read the way <code>MEAS</code> reads it. Every part needs a number as its value (a diode needs none). If the circuit cannot be solved, a note under the script says why and the markers keep their quantity only.') +
     wide('AC', 'With <code>VAC</code> or <code>IAC</code> sources the circuit is solved in phasors: CAP is jωC, IND is jωL. Each source keeps its own omega; the circuit is solved once per omega (and once for DC) with the other sources switched off, and the readings add up (superposition). Each marker writes its reading in the form named after <code>MEAS</code>: <code>POLE</code> <code>7.07 V ∠ −45°</code>, <code>RECT</code> <code>5 − j5 V</code> or <code>SINE</code> <code>7.07 cos(1000t − 45°) V</code>, as in <code>MEAS V RECT</code> (polar when none is given; a DC reading is a plain number in every form); a sum names each omega, as in <code>2 V + 3 V ∠ 0° @ 1000 rad/s</code>. A diode with AC sources needs a time simulation, which comes later, so that circuit is not solved.') +
     wide('Several parts','<code>*R1, C1\\ R = 4.7k, C = 10u; red, blue</code>: one entry per part, as for blocks.') +

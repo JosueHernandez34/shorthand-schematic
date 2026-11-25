@@ -139,6 +139,28 @@ ok('a decision at the end of a path has none', has(m.errors, /it has none/), sho
 m = P('*A, CHECK\\ PROC, DEC = [x > 1]\n*NO\\ PROC; BRANCH\n*YES\\ PROC');
 ok('a decision with a BRANCH after it has yes and no', !has(m.errors, /decision/), show(m));
 
+// END is element-wise, NULL skips a place, and brackets hold several specifiers for one element (Josue, 11/25)
+m = P('*A\\ SERIES\n*DONE, OFF\\ PINK, BLACK; END');
+ok('"PINK, BLACK; END" ends the first element, which is refused, and says OFF gets none', has(m.errors, /DONE is marked end, but the path continues/) && has(m.warnings, /1 entry for 2 elements in "END": OFF gets none/), show(m));
+m = P('*A\\ SERIES\n*DONE, OFF\\ PINK, BLACK; NULL, END');
+ok('"NULL, END" skips DONE and ends OFF', !m.errors.length && !m.warnings.length && byLabel(m, 'OFF').role === 'end' && byLabel(m, 'DONE').color === 'pink', show(m));
+m = P('*A\\ SERIES\n*DONE, OFF\\ PINK, BLACK END');
+ok('END can share an entry with other specifiers', !m.errors.length && byLabel(m, 'OFF').role === 'end' && byLabel(m, 'OFF').color === 'black', show(m));
+ok('a plain one-element END line still ends', (() => { const q = P('*A\\ SERIES\n*E\\ END'); return !q.errors.length && byLabel(q, 'E').role === 'end'; })());
+m = P('*A, B, C\\ PROC, RED, MEAS V');
+ok('entries in one group can be different kinds: shape, color, marker', byLabel(m, 'A').shape === 'proc' && byLabel(m, 'B').color === 'red' && has(m.warnings, /MEAS only measures circuit parts; ignored on C/), show(m));
+m = P('*A, B\\ [BLUE, PROC = cool down], DIA');
+ok('brackets hold several specifiers for one element; the next entry is the next element', !m.errors.length && byLabel(m, 'A').color === 'blue' && byLabel(m, 'A').shape === 'proc' && byLabel(m, 'A').value === 'cool down' && byLabel(m, 'B').shape === 'dia', show(m));
+m = P('*A, B\\ [PROC, TRI], DIA');
+ok('two shapes for one element in brackets is an error', has(m.errors, /\[PROC, TRI\] gives one element two shapes/), show(m));
+m = P('*G1, V1, R1\\ GND, [VOLT_SRC = 5, MEAS I], [RED RES = 1k, MEAS V POLE]');
+ok('brackets on circuit parts: value, color and MEAS for each in one group', !m.errors.length && byLabel(m, 'V1').meas === 'I' && byLabel(m, 'R1').meas === 'V' && byLabel(m, 'R1').color === 'red' && near(byLabel(m, 'R1').measNum, 5), show(m));
+m = P('*A, B\\ DEC = [x > 1, y < 2], PROC\n*N\\ PROC; BRANCH');
+ok('a bracket after = is still a value', byLabel(m, 'A').value === 'x > 1, y < 2' && !has(m.errors, /entr/), show(m));
+m = P('*A, B\\ [PROC, BRANCH], DIA');
+ok('a command inside brackets is an error', has(m.errors, /"BRANCH" in \[PROC, BRANCH\] is not a specifier for one element/), show(m));
+ok('NULL and END type out in capitals', ex('*A\\ null ') === '*A\\ NULL ' && ex('*A\\ x, end,') === '*A\\ x, END,');
+
 // diagrams that are not circuits are left alone
 m = P('*A, B\\ proc, io');
 ok('a flow diagram has no circuit notes', !m.errors.length && !m.warnings.length && !m.circuit, show(m));
