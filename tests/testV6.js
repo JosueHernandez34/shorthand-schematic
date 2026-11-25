@@ -3,7 +3,7 @@ const fs = require('fs'), vm = require('vm'), path = require('path');
 const page = fs.readFileSync(path.join(__dirname, '..', process.env.APP_FILE || 'shorthandSchematicV6.html'), 'utf8');
 const core = page.split('// ==CORE-START==')[1].split('// ==CORE-END==')[0];
 const ctx = {}; vm.createContext(ctx);
-vm.runInContext(core + ';this.A={parse,renderSVG,edgeList,expandAtCaret,nextShape,eeNumber,fmtEng,formatPhasor,readControl,readAC,SETTINGS}', ctx);
+vm.runInContext(core + ';this.A={parse,renderSVG,edgeList,expandAtCaret,enterAt,nextShape,eeNumber,fmtEng,formatPhasor,readControl,readAC,SETTINGS}', ctx);
 const A = ctx.A;
 let fails = 0;
 const ok = (n, c, x) => { console.log((c ? 'PASS ' : 'FAIL ') + n + (x ? '  ' + x : '')); if (!c) fails++; };
@@ -130,6 +130,51 @@ A.SETTINGS.groundPos = 'top';
 A.renderSVG(m);
 ok('top: the return runs above the top row', m.groundY < byLabel(m, 'V1').y - 40);
 A.SETTINGS.groundPos = 'bottom';
+
+// top-down view (Josue, 11/24): the same plan turned, blocks upright, parts turned to run down the page
+const lr = P('*V1, R1\\ VOLT_SRC = 5, RES = 1k; , MEAS V\n*R2, G1\\ RES = 2k, GND; BRANCH; MEAS I');
+const lrSvg = A.renderSVG(lr), lrPos = lr.nodes.map(n => [n.x, n.y]);
+A.SETTINGS.direction = 'td';
+const tdm = P('*V1, R1\\ VOLT_SRC = 5, RES = 1k; , MEAS V\n*R2, G1\\ RES = 2k, GND; BRANCH; MEAS I');
+const tdSvg = A.renderSVG(tdm), [v1, r1, r2] = ['V1', 'R1', 'R2'].map(l => byLabel(tdm, l));
+ok('top-down: the main path runs down the page in one column', v1.x === r1.x && r1.y > v1.y, JSON.stringify([v1.x, v1.y, r1.x, r1.y]));
+ok('top-down: a branch is a column to the right, its first part lower down', r2.x > r1.x && r2.y > r1.y);
+ok('top-down: parts are turned a quarter, labels sit beside them', /rotate\(90 /.test(tdSvg) && tdSvg.includes(`x="${r1.x + 20}"`));
+ok('top-down: the ground return runs right of the last column', tdm.groundQ > r2.x + 40 && /class="gnd"/.test(tdSvg) && /rotate\(-90 /.test(tdSvg));
+ok('top-down: the readings are the same', byLabel(tdm, 'R1').measValue === byLabel(lr, 'R1').measValue && byLabel(tdm, 'R2').measValue === byLabel(lr, 'R2').measValue, byLabel(tdm, 'R1').measValue);
+ok('top-down: the page size is whole pixels (the zoom reads it as an integer)', /<svg[^>]* width="\d+" height="\d+"/.test(tdSvg), (tdSvg.match(/<svg[^>]*>/) || [''])[0]);
+ok('top-down: the page is taller than it is wide for a long path', (() => { const t = P('*A, B, C, D, E, F\\'); A.renderSVG(t); return t.height > t.width; })());
+const fl = P('*S, A\\ series\n*B\\ BRANCH WAIT\n*C\\ RETURN\n*D\\ end');
+const flSvg = A.renderSVG(fl);
+ok('top-down: blocks stay upright (no turn) and wires meet their top and bottom', !/rotate/.test(flSvg) && flSvg.includes(`${byLabel(fl, 'S').y + 22} L`) || flSvg.includes(` ${byLabel(fl, 'S').y + 22}`));
+A.SETTINGS.groundPos = 'top';
+A.renderSVG(tdm);
+ok('top-down with the ground on top: the return runs left of the first column', tdm.groundQ < v1.x - 40);
+A.SETTINGS.groundPos = 'bottom';
+A.SETTINGS.direction = 'lr';
+A.renderSVG(lr);
+ok('left to right is unchanged by the flow coordinates', A.renderSVG(lr) === lrSvg && JSON.stringify(lr.nodes.map(n => [n.x, n.y])) === JSON.stringify(lrPos));
+
+// Enter (Josue, 11/24): closes an open list, or starts the next line with its * typed
+const type = keys => {
+  let t = '', c = 0;
+  for (const k of keys) {
+    if (k === '\n') { const r = A.enterAt(t, c); if (r) { t = r.text; c = r.caret; } else { t = t.slice(0, c) + '\n' + t.slice(c); c++; } }
+    else { t = t.slice(0, c) + k + t.slice(c); c += k.length; }
+  }
+  return t;
+};
+ok('Enter on an empty script types the opening *', type(['\n']) === '*');
+ok('Enter on the name line closes it and opens the next line', type(['\n', 'Schematic', '\n']) === '*Schematic\\\n*');
+ok('Enter on an element list closes it, ready for the specifier', type(['\n', 'T', '\n', 'A, B', '\n']) === '*T\\\n*A, B\\ ');
+ok('Enter on a closed line starts the next with *', type(['\n', 'T', '\n', 'A', '\n', 'RES = 1k', '\n']) === '*T\\\n*A\\ RES = 1k\n*');
+ok('Enter right after closing (no specifier) goes on to the next line', type(['\n', 'T', '\n', 'A', '\n', '\n']) === '*T\\\n*A\\\n*');
+ok('Enter writes out a last shorthand letter first', type(['\n', 'T', '\n', 'A', '\n', 's', '\n']) === '*T\\\n*A\\ SERIES\n*');
+ok('Enter on a bare * closes the diagram; after that it is a plain line break', type(['\n', 'T', '\n', 'A', '\n', '\n', '\n', '\n']) === '*T\\\n*A\\\n*\\\n');
+ok('Enter inside an open [ ] value is a plain line break', type(['\n', 'T', '\n', 'A', '\n', 'proc = [x, ', '\n']) === '*T\\\n*A\\ proc = [x, \n');
+ok('Enter in the middle of a line is a plain line break', A.enterAt('*T\\\n*A, B\\', 6) === null);
+ok('Enter keeps the tabbing: a line inside a waiting branch', type(['\n', 'T', '\n', 'A', '\n', '\n', 'B', '\n', 'BRANCH WAIT', '\n', 'C', '\n']) === '*T\\\n*A\\\n   *B\\ BRANCH WAIT\n   *C\\ ');
+ok('the typed script draws', (() => { const m = A.parse(type(['\n', 'T', '\n', 'V1, R1', '\n', 'VOLT_SRC = 5, RES = 1k; , MEAS V', '\n', '\n'])); return !m.errors.length && byLabel(m, 'R1').measValue === '5 V'; })());
 
 ok('the whole page script parses', (() => { try { new Function(page.split('<script>')[1].split('</script>')[0]); return true; } catch (e) { console.log('   ' + e.message); return false; } })());
 

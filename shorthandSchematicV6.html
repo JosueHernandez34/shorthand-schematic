@@ -104,8 +104,14 @@
     <fieldset>
       <legend>Ground return</legend>
       <p class="hint">Where a circuit's return path to ground is drawn.</p>
-      <label><input type="radio" name="groundPos" value="bottom"> Bottom (default)</label>
-      <label><input type="radio" name="groundPos" value="top"> Top</label>
+      <label><input type="radio" name="groundPos" value="bottom"> Bottom (default; the right side in the top-down view)</label>
+      <label><input type="radio" name="groundPos" value="top"> Top (the left side in the top-down view)</label>
+    </fieldset>
+    <fieldset>
+      <legend>Direction</legend>
+      <p class="hint">Which way the diagram runs. The arrow button beside the zoom buttons switches it too.</p>
+      <label><input type="radio" name="direction" value="lr"> Left to right (default)</label>
+      <label><input type="radio" name="direction" value="td"> Top to bottom</label>
     </fieldset>
   </form>
 </dialog>
@@ -123,6 +129,7 @@
   </div>
   <div class="right" id="rightPanel">
     <div id="zoomBar" role="group" aria-label="Zoom">
+      <button id="dirBtn" aria-label="Draw top to bottom" title="Draw top to bottom">&darr;</button>
       <button id="zOut" aria-label="Zoom out">&minus;</button>
       <button id="zFit" aria-label="Fit the diagram to the width"><span id="zPct">100%</span></button>
       <button id="zIn" aria-label="Zoom in">+</button>
@@ -223,7 +230,8 @@ const EE = {
 };
 // Settings the person picks on the Settings page (V6). The core reads them from here so node checks can set them too.
 // groundPos: where the ground return is drawn. (The AC form moved to each MEAS marker: POLE, RECT or SINE.)
-const SETTINGS = { groundPos: 'bottom' };
+// direction: lr draws left to right, td top to bottom (Josue, 11/24: a top-down view toggle).
+const SETTINGS = { groundPos: 'bottom', direction: 'lr' };
 // Parts with a direction (Josue, 11/24). Each is drawn negative to positive along the path, so current flows left to
 // right: a voltage source has − on the left and + on the right, a current source's arrow points along the path, a
 // diode's anode is on the left. The word REV in a part's entry (VS REV = 5) mirrors it to positive to negative.
@@ -1148,30 +1156,98 @@ function barBack(text, caretLn) {
   return lineResult(lines.join('\n'), lines.slice(0, caretLn - 1).join('\n').length);
 }
 
+// Enter does the hotkey's job (Josue, 11/24): on a line whose element list is still open it types the closing \
+// (with a space, so a shorthand letter typed next is written out as usual); on a line that is closed it ends the
+// line and starts the next one with its opening * already typed. A name line has nothing after its \, so Enter
+// closes it and starts the next line at once; a bare * closes the diagram (*\), after which Enter is a plain line
+// break. A shorthand letter left at the end of the line is written out first, as Enter always did. Returns the
+// tidied text and caret (lineResult form), or null when Enter should just break the line: in the middle of a line,
+// inside an open [ ] value, or after the diagram is closed. Shift+Enter is always a plain line break (editor code).
+function enterAt(text, caret) {
+  // the letter before the caret is written out as if a line break had been typed, and that line break taken back
+  const x = expandAtCaret(text.slice(0, caret) + '\n' + text.slice(caret), caret + 1);
+  if (x) { text = x.text.slice(0, x.caret - 1) + x.text.slice(x.caret); caret = x.caret - 1; }
+  const ls = text.lastIndexOf('\n', caret - 1) + 1, nl = text.indexOf('\n', caret), le = nl < 0 ? text.length : nl;
+  if (text.slice(caret, le).trim()) return null;
+  const before = text.slice(ls, caret).replace(/\s+$/, ''), cut = ls + before.length;
+  const at = s => { const t = text.slice(0, cut) + s + text.slice(le), c = cut + s.length; return tidy(t, c); };
+  const tidy = (t, c) => {
+    let r = convertReturnDigits(t, c); r = splitSequences(r.text, r.caret); r = reindentWithCaret(r.text, r.caret);
+    return lineResult(r.text, r.caret);
+  };
+  const firstLine = !text.slice(0, ls).trim();
+  // nothing may follow a closed diagram, so the last *\ and anything under it take plain line breaks
+  if (/(^|\n)\s*\*\s*\\\s*(\n|$)/.test(text.slice(0, ls))) return null;
+  if (!before.trim()) return at(before + '*');
+  const open = before.match(/^\s*\*([^\\]*)$/);
+  if (open) {
+    if (firstLine) return at('\\\n*');             // the name line: close it and go on
+    if (!open[1].trim()) return at('\\');           // a bare *: this closes the diagram
+    return at('\\ ');                               // an element list: on to its specifier
+  }
+  if (/^\s*\*\s*\\$/.test(before)) return null;     // the closing *\ itself
+  let depth = 0; // inside an open [ ] value Enter is part of the value
+  for (const ch of before.slice(before.indexOf('\\') + 1)) { if (ch === '[') depth++; else if (ch === ']' && depth > 0) depth--; }
+  if (depth > 0 || !before.includes('\\')) return null;
+  return at('\n*');
+}
+
 const CFG = { H: 44, GAP: 46, LANE: 84, TOP: 78, LEFT: 36 };
 
+// The layout works in flow coordinates, p along the path and q across it (one lane per branch level), and maps
+// them to the page by direction (V6, Josue 11/24): left to right puts p on x, top-down puts p on y. Blocks stay
+// upright either way, so in top-down a block spans its height along the path; a circuit part is turned to run down
+// the page and keeps its length, and its texts move beside it. ext is half of what an element spans along the path,
+// which is where the wires meet it.
 function layout(model) {
-  const { nodes, edges } = model;
+  const { nodes, edges } = model, td = SETTINGS.direction === 'td';
+  model.td = td;
   const inc = nodes.map(() => []);
   edges.forEach(([a, b]) => inc[b].push(a));
   const layer = nodes.map(() => 0);
   nodes.forEach((n, i) => { layer[i] = inc[i].length ? Math.max(...inc[i].map(a => layer[a])) + 1 : 0; });
   const nLayers = Math.max(0, ...layer) + 1;
+  nodes.forEach(n => { n.ext = (td && n.type === 'el' && !EE[n.shape] ? CFG.H : n.w) / 2; });
   const colW = new Array(nLayers).fill(0);
-  nodes.forEach((n, i) => { colW[layer[i]] = Math.max(colW[layer[i]], n.w); });
-  const colX = []; let cum = CFG.LEFT;
-  for (let l = 0; l < nLayers; l++) { colX[l] = cum + colW[l] / 2; cum += colW[l] + CFG.GAP; }
-  // a MEAS marker sits above a part's name, so the top row moves down to keep it clear of the title
-  const markTop = nodes.some(n => n.meas && n.lane === 0) ? 16 : 0;
-  // A circuit's ground return runs below the lowest row (or above the top row when Settings say so), clear of
-  // the values and markers; the rows move down to make room when it is on top.
+  nodes.forEach((n, i) => { colW[layer[i]] = Math.max(colW[layer[i]], 2 * n.ext); });
+  // A circuit's ground return runs past the last lane (below it, or right of it in top-down), or before the first
+  // lane when Settings say top; the lanes move over to make room when it is before them.
   const gTop = model.circuit && SETTINGS.groundPos === 'top';
-  const top = CFG.TOP + markTop + (gTop ? 60 : 0);
-  nodes.forEach((n, i) => { n.x = colX[layer[i]]; n.y = top + n.lane * CFG.LANE; });
-  model.width = Math.max(360, cum - CFG.GAP + CFG.LEFT);
-  const bottom = top + (model.lanes - 1) * CFG.LANE;
-  model.groundY = !model.circuit ? null : gTop ? CFG.TOP + 6 : bottom + 64;
-  model.height = model.circuit && !gTop ? model.groundY + 36 : bottom + CFG.H / 2 + 40;
+  const colP = []; let cum = td ? 64 : CFG.LEFT;
+  for (let l = 0; l < nLayers; l++) { colP[l] = cum + colW[l] / 2; cum += colW[l] + CFG.GAP; }
+  if (!td) {
+    // a MEAS marker sits above a part's name, so the top row moves down to keep it clear of the title
+    const markTop = nodes.some(n => n.meas && n.lane === 0) ? 16 : 0;
+    const top = CFG.TOP + markTop + (gTop ? 60 : 0);
+    nodes.forEach((n, i) => { n.p = colP[layer[i]]; n.q = top + n.lane * CFG.LANE; });
+    model.width = Math.max(360, cum - CFG.GAP + CFG.LEFT);
+    const bottom = top + (model.lanes - 1) * CFG.LANE;
+    model.groundQ = !model.circuit ? null : gTop ? CFG.TOP + 6 : bottom + 64;
+    model.height = model.circuit && !gTop ? model.groundQ + 36 : bottom + CFG.H / 2 + 40;
+  } else {
+    // how far each element reaches either side of its lane: a block half its width; a part its marker on the left
+    // and its name and value on the right
+    const side = n => {
+      if (n.type === 'junction') return [5, 5];
+      if (!EE[n.shape]) return [n.w / 2, n.w / 2];
+      return [n.meas ? (n.measValue || n.meas).length * 7 + 34 : 16,
+        22 + Math.max(SHOW_EE_NAME ? n.label.length * 8 : 0, n.value ? n.value.length * 7.5 : 0)];
+    };
+    const sides = nodes.map(side);
+    const L = Math.max(16, ...sides.map(x => x[0])), R = Math.max(16, ...sides.map(x => x[1]));
+    // one pitch for every lane, so branch wires stay straight
+    const pitch = Math.max(CFG.LANE, L + R + 30), left = CFG.LEFT + L + (gTop ? 60 : 0);
+    nodes.forEach((n, i) => { n.p = colP[layer[i]]; n.q = left + n.lane * pitch; });
+    const last = left + (model.lanes - 1) * pitch;
+    model.groundQ = !model.circuit ? null : gTop ? CFG.LEFT + 6 : last + R + 30;
+    model.width = Math.max(360, model.circuit && !gTop ? model.groundQ + 36 : last + R + 30);
+    model.height = cum - CFG.GAP + 40;
+  }
+  nodes.forEach(n => { n.x = td ? n.q : n.p; n.y = td ? n.p : n.q; });
+  // whole pixels: text widths are estimates in fractions, and the zoom code reads the page size as an integer
+  model.width = Math.ceil(model.width); model.height = Math.ceil(model.height);
+  // groundY is the left-to-right name the checks and the older code use
+  model.groundY = td ? null : model.groundQ;
   return model;
 }
 
@@ -1264,7 +1340,8 @@ function eeSymbolSVG(kind, x0, y, w, stroke, sw, through) {
 // right to left on a reversed part. V is drawn + ... − with + where the current enters (the passive sign convention);
 // I is an arrow the way the current flows. The text is the quantity until a solver gives n.measValue (Josue, 11/24:
 // "marker now, number later"), then it is the reading, for example +5 V−.
-function measSVG(n, x0, ink) {
+function measSVG(n, x0, ink, td) {
+  if (td) return measSVGDown(n, ink);
   const y = n.y - 42, dir = n.rev ? -1 : 1, x1 = x0 + n.w;
   const t = (s, x, size) => `<text x="${x}" y="${y + 4}" text-anchor="middle" font-family="system-ui, Segoe UI, sans-serif" font-size="${size || 12}" fill="${ink}">${esc(s)}</text>`;
   const shown = n.measValue || n.meas;
@@ -1279,6 +1356,21 @@ function measSVG(n, x0, ink) {
   return `<g class="meas"><path d="M${tail} ${y} H${tip} M${tip - dir * 4} ${y - 3.5} L${tip} ${y} L${tip - dir * 4} ${y + 3.5}" fill="none" stroke="${ink}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>${t(shown, sx + 22 + tw / 2)}</g>`;
 }
 
+// The marker in the top-down view: on the left of the part, which runs down the page. V is + and − at its two ends
+// (+ where the current enters: the top, or the bottom on a reversed part) with the reading between them; I is a short
+// arrow the way the current flows, with the reading to its left.
+function measSVGDown(n, ink) {
+  const dir = n.rev ? -1 : 1, x = n.x - 18, y0 = n.y - n.w / 2, y1 = n.y + n.w / 2;
+  const t = (str, tx, ty, size, anchor) => `<text x="${tx}" y="${ty}" text-anchor="${anchor || 'middle'}" font-family="system-ui, Segoe UI, sans-serif" font-size="${size || 12}" fill="${ink}">${esc(str)}</text>`;
+  const shown = n.measValue || n.meas;
+  if (n.meas === 'V') {
+    const [hi, lo] = dir > 0 ? ['+', '−'] : ['−', '+'];
+    return `<g class="meas">${t(hi, x, y0 + 14, 14)}${t(shown, x - 8, n.y + 4, 12, 'end')}${t(lo, x, y1 - 4, 14)}</g>`;
+  }
+  const tip = n.y + dir * 9, tail = n.y - dir * 9;
+  return `<g class="meas"><path d="M${x} ${tail} V${tip} M${x - 3.5} ${tip - dir * 4} L${x} ${tip} L${x + 3.5} ${tip - dir * 4}" fill="none" stroke="${ink}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>${t(shown, x - 10, n.y + 4, 12, 'end')}</g>`;
+}
+
 // hl is the lane to strength map from highlightAt; omit it for a clean drawing (downloads).
 // interactive adds the click targets used on screen; downloads leave them out.
 function renderSVG(model, hl, interactive) {
@@ -1290,29 +1382,36 @@ function renderSVG(model, hl, interactive) {
   o.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`);
   o.push(`<rect width="100%" height="100%" fill="#fff"/>`);
   o.push(`<text x="16" y="28" font-family="system-ui, Segoe UI, sans-serif" font-size="15" font-weight="600" fill="#444">${esc(title)}</text>`);
+  // wires are planned in flow coordinates (p along, q across) and mapped to the page, so one plan serves both
+  // directions
+  const td = model.td, pt = ([p, q]) => td ? `${q} ${p}` : `${p} ${q}`;
+  const line = pts => 'M' + pts.map(pt).join(' L');
   // wires: a highlighted branch also colors the wires that enter and leave it
   for (const [a, b] of edges) {
     const u = nodes[a], v = nodes[b];
     let d;
-    if (u.lane === v.lane) d = `M${u.x + u.w / 2} ${u.y} H${v.x - v.w / 2}`;
-    else if (v.type === 'junction') d = `M${u.x + u.w / 2} ${u.y} H${v.x} V${v.y}`;
-    else d = `M${u.x} ${u.y} V${v.y} H${v.x - v.w / 2}`;
+    if (u.lane === v.lane) d = line([[u.p + u.ext, u.q], [v.p - v.ext, v.q]]);
+    else if (v.type === 'junction') d = line([[u.p + u.ext, u.q], [v.p, u.q], [v.p, v.q]]);
+    else d = line([[u.p, u.q], [u.p, v.q], [v.p - v.ext, v.q]]);
     const su = hlOf(u), sv = hlOf(v);
     const s = rank(su) >= rank(sv) ? su : sv;
     const st = s ? HL[s] : null;
     o.push(`<path d="${d}" fill="none" stroke="${st ? st.stroke : INK}" stroke-width="${st ? st.w : 2}" stroke-linejoin="round"/>`);
     // yes on the wire that carries on from a decision, no on the branch that leaves it
-    if (u.decision) o.push(u.lane === v.lane ? smallText('yes', u.x + 7, u.y - 6) : smallText('no', u.x + 6, u.y + 18));
+    if (u.decision) o.push(u.lane === v.lane ? (td ? smallText('yes', u.x + 6, u.y + 16) : smallText('yes', u.x + 7, u.y - 6))
+      : (td ? smallText('no', u.x + 12, u.y - 5) : smallText('no', u.x + 6, u.y + 18)));
   }
   // The ground return (V6): from the left end of the first element, down (or up) to the ground line, along it and
   // back to the main path's last point. The ground sign hangs from its middle.
   if (model.circuit && model.mainStart != null && model.mainEnd != null) {
-    const a = nodes[model.mainStart], b = nodes[model.mainEnd], gy = model.groundY;
-    const ax = a.x - a.w / 2, bx = b.type === 'junction' ? b.x : b.x + b.w / 2;
-    const lx = ax - 16, rx = bx + 16, up = SETTINGS.groundPos === 'top' ? -1 : 1;
-    o.push(`<path d="M${ax} ${a.y} H${lx} V${gy} H${rx} V${b.y} H${bx}" fill="none" stroke="${INK}" stroke-width="2" stroke-linejoin="round" class="gnd"/>`);
-    const mx = Math.round((lx + rx) / 2);
-    o.push(`<path d="M${mx} ${gy} V${gy + up * 8}" stroke="${INK}" stroke-width="2"/>` + groundSign(mx, gy + up * 8, up, INK, 2));
+    const a = nodes[model.mainStart], b = nodes[model.mainEnd], gq = model.groundQ;
+    const ap = a.p - a.ext, bp = b.type === 'junction' ? b.p : b.p + b.ext;
+    const lp = ap - 16, rp = bp + 16, up = SETTINGS.groundPos === 'top' ? -1 : 1;
+    o.push(`<path d="${line([[ap, a.q], [lp, a.q], [lp, gq], [rp, gq], [rp, b.q], [bp, b.q]])}" fill="none" stroke="${INK}" stroke-width="2" stroke-linejoin="round" class="gnd"/>`);
+    const mp = Math.round((lp + rp) / 2), [sx, sy] = td ? [gq + up * 8, mp] : [mp, gq + up * 8];
+    // the sign hangs away from the circuit: down (or up) in left to right, right (or left) in top-down
+    const sign = groundSign(sx, sy, up, INK, 2);
+    o.push(`<path d="${line([[mp, gq], [mp, gq + up * 8]])}" stroke="${INK}" stroke-width="2"/>` + (td ? `<g transform="rotate(-90 ${sx} ${sy})">${sign}</g>` : sign));
   }
   const h = CFG.H, hasOut = new Set(edges.map(([a]) => a));
   for (const n of nodes) {
@@ -1329,18 +1428,28 @@ function renderSVG(model, hl, interactive) {
     const fill = st ? st.fill : col ? col.fill : (kind === 'pill' || kind === 'flag' ? START_FILL : '#fff');
     if (interactive) o.push(`<g class="blk" data-ln="${n.ln}" data-idx="${n.idx}" style="cursor:pointer"><title>Click to change ${EE[n.shape] ? 'part' : 'shape'}</title>`);
     if (EE[n.shape]) {
+      // the part's slot: as wide as the part along the path, as tall as a block across it (turned in top-down)
+      const bw = td ? h : n.w, bh = td ? n.w : h, bx = n.x - bw / 2, by = n.y - bh / 2;
       // A part has no body to fill, so a highlight shows as a soft patch behind it; a color tints the lines only.
-      if (st) o.push(`<rect x="${x0}" y="${y0}" width="${n.w}" height="${h}" rx="6" fill="${st.fill}"/>`);
+      if (st) o.push(`<rect x="${bx}" y="${by}" width="${bw}" height="${bh}" rx="6" fill="${st.fill}"/>`);
       // an invisible slot so a click anywhere on the part counts, not only on its thin lines
-      else if (interactive) o.push(`<rect x="${x0}" y="${y0}" width="${n.w}" height="${h}" fill="#fff" fill-opacity="0"/>`);
+      else if (interactive) o.push(`<rect x="${bx}" y="${by}" width="${bw}" height="${bh}" fill="#fff" fill-opacity="0"/>`);
       // REV mirrors the symbol about its own center, which swaps + and −, turns the arrow and the diode around,
-      // and leaves the leads where the wires meet them
+      // and leaves the leads where the wires meet them. Top-down then turns it a quarter clockwise, so what ran
+      // left to right runs top to bottom.
       const sym = eeSymbolSVG(n.shape, x0, n.y, n.w, stroke, sw, hasOut.has(n.id));
-      o.push(n.rev ? `<g transform="matrix(-1 0 0 1 ${2 * n.x} 0)" class="rev">${sym}</g>` : sym);
-      if (SHOW_EE_NAME) o.push(labelSVG(n.label, n.x, n.y - 24, ink, 13));
-      if (n.value) o.push(valueSVG(n.value, n.x, n.y + 25, ink));
-      if (n.meas) o.push(measSVG(n, x0, ink));
-      if (n.badEnd) o.push(`<path d="M${x0 + 4} ${y0 + 4} L${x0 + n.w - 4} ${y0 + h - 4} M${x0 + n.w - 4} ${y0 + 4} L${x0 + 4} ${y0 + h - 4}" stroke="${BAD}" stroke-width="3.5" stroke-linecap="round" class="badx"/>`);
+      const flat = n.rev ? `<g transform="matrix(-1 0 0 1 ${2 * n.x} 0)" class="rev">${sym}</g>` : sym;
+      o.push(td ? `<g transform="rotate(90 ${n.x} ${n.y})">${flat}</g>` : flat);
+      const beside = t => t.replace('text-anchor="middle"', 'text-anchor="start"');
+      if (td) {
+        if (SHOW_EE_NAME) o.push(beside(labelSVG(n.label, n.x + 20, n.value ? n.y - 8 : n.y, ink, 13)));
+        if (n.value) o.push(beside(valueSVG(n.value, n.x + 20, n.y + 9, ink)));
+      } else {
+        if (SHOW_EE_NAME) o.push(labelSVG(n.label, n.x, n.y - 24, ink, 13));
+        if (n.value) o.push(valueSVG(n.value, n.x, n.y + 25, ink));
+      }
+      if (n.meas) o.push(measSVG(n, x0, ink, td));
+      if (n.badEnd) o.push(`<path d="M${bx + 4} ${by + 4} L${bx + bw - 4} ${by + bh - 4} M${bx + bw - 4} ${by + 4} L${bx + 4} ${by + bh - 4}" stroke="${BAD}" stroke-width="3.5" stroke-linecap="round" class="badx"/>`);
       if (interactive) o.push('</g>');
       continue;
     }
@@ -1428,7 +1537,13 @@ if (typeof document !== 'undefined') {
       e.preventDefault();
       document.execCommand('insertText', false, hotkeyText(cur.value.slice(0, cur.selectionStart)));
     } else if (e.key === 'Enter') {
-      e.preventDefault(); applyBar(barEnter(src.value, caretLine()));
+      // Enter at the end of the box closes the list or starts the next line, as in the script (see enterAt);
+      // Shift+Enter, or Enter with the caret inside the line, only opens a new line under it
+      e.preventDefault();
+      const ln = caretLine(), lines = src.value.split('\n');
+      let r = null;
+      if (!e.shiftKey && cur.selectionStart === cur.value.length) r = enterAt(src.value, lines.slice(0, ln).join('\n').length);
+      applyBar(r || barEnter(src.value, ln));
     } else if (e.key === 'Backspace' && cur.value === '' && cur.selectionStart === 0) {
       const r = barBack(src.value, caretLine());
       if (r) { e.preventDefault(); applyBar(r); }
@@ -1477,7 +1592,7 @@ if (typeof document !== 'undefined') {
     if (!model.nodes.length) {
       out.innerHTML = model.errors.length
         ? `<div class="empty err">${esc(model.errors[0])}</div>`
-        : '<div class="empty">Nothing to draw yet. Start by naming the schematic: press the apostrophe key, type a name, then press it again (for example *Schematic\\).</div>';
+        : '<div class="empty">Nothing to draw yet. Start by naming the schematic: press Enter (or the apostrophe key), type a name, then press it again (for example *Schematic\\).</div>';
       lastSVG = ''; return;
     }
     lastSVG = renderSVG(model); // clean copy for downloads: no click targets, no highlight, not zoomed
@@ -1538,6 +1653,11 @@ if (typeof document !== 'undefined') {
       // the word goes as one typed deletion, so Ctrl+Z brings it back
       if (r) { e.preventDefault(); src.setSelectionRange(r.from, r.to); document.execCommand('delete'); return; }
     }
+    // Enter closes an open list or starts the next line (enterAt); Shift+Enter stays a plain line break
+    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && src.selectionStart === src.selectionEnd) {
+      const r = enterAt(src.value, src.selectionStart);
+      if (r) { e.preventDefault(); setText(r.text, r.caret); update(); return; }
+    }
     if (e.key === HOTKEY && !e.ctrlKey && !e.metaKey && !e.altKey && src.selectionStart === src.selectionEnd) {
       const before = src.value.slice(0, src.selectionStart).split('\n').pop();
       e.preventDefault();
@@ -1567,6 +1687,7 @@ if (typeof document !== 'undefined') {
   const cmdRow = (cmd, short, text) => `<tr><td>${code(cmd)}</td><td>${short}</td><td>${text}</td></tr>`;
   document.getElementById('helpBody').innerHTML =
     '<h3>Typing</h3><table>' +
+    row(code('Enter'), 'Does the hotkey\'s job at the end of a line: on a line whose list is still open it types <code>\\</code> (and a space, ready for the specifier); on a line that is closed it starts the next line with its <code>*</code> already typed. So a whole line is: the names, Enter, the specifier, Enter. On the name line Enter closes it and goes straight on; on a bare <code>*</code> it closes the diagram (<code>*\\</code>). In the middle of a line, inside an open <code>[ ]</code> value, or with Shift held, Enter is a plain line break.') +
     row(code(HOTKEY), 'Hotkey: types <code>*</code> to open an element list, and <code>\\</code> to close an open one. Inside a bracketed value it types itself. You can type <code>*</code> and <code>\\</code> yourself instead. A period types normally.') +
     row(code('*S, A\\ specifier'), 'One line: the elements in series, then the specifier.') +
     row('Specifier', 'Everything after the closing <code>\\</code>. It specifies each element (shape, color, value) and then how the line behaves (<code>branch</code>, <code>wait</code>, <code>return</code>, <code>end</code>): the element is worked on before its location.') +
@@ -1578,7 +1699,7 @@ if (typeof document !== 'undefined') {
     row('One line', 'Each <code>*</code> after a finished list starts a new line, tabbed automatically. Typed spaces are ignored.') +
     row('Letters to words', 'A small shorthand letter in the specifier is written out in capitals as soon as you type a space, comma or semicolon after it (or press Enter, or start the next list): <code>s</code> becomes <code>SERIES</code>, <code>t</code> becomes <code>TRI</code>, <code>r2</code> becomes <code>RETURN^2</code>. Backspace right after it takes the whole word back; Backspace at the end of any such word deletes the whole word. Part codes are written out too: <code>R</code> becomes <code>RES</code>, <code>VS</code> (or <code>vs</code>) becomes <code>VOLT_SRC</code> (see Circuit parts), and <code>m</code> becomes <code>MEAS</code>. Letters in element names and in values are left alone. A pasted script is kept as pasted.') +
     '</table><h3>Current line box and script panel</h3><table>' +
-    row('Current line', 'The box at the bottom edits the current script line (same hotkey and clean-up as the script). Enter starts a new line, Backspace on an empty box goes back a line, Up and Down move between lines.') +
+    row('Current line', 'The box at the bottom edits the current script line (same hotkey and clean-up as the script). Enter at the end of the box works as in the script (closes the list, or starts the next line with <code>*</code>); Shift+Enter starts a new line, Backspace on an empty box goes back a line, Up and Down move between lines.') +
     row('Open waits', 'Red chips beside the box list every wait still open (the innermost is darker), so you can watch the diagram with the script hidden.') +
     row('Script panel border', 'Drag the border to resize the panel (double-click resets it; with the border focused, the arrow keys also resize). The arrow button at the top of the border hides and shows the panel.') +
     '</table><h3>Behavior commands and shorthand (tentative), written in the specifier after the shapes</h3><table>' +
@@ -1612,6 +1733,7 @@ if (typeof document !== 'undefined') {
     '</table>' +
     '<h3>Diagram</h3><table>' +
     row('<code>&minus;</code> <code>+</code>', 'Zoom out and in. The mouse wheel zooms around the pointer. The canvas is an endless white plane: drag anywhere on it to move the drawing as far as you like. The percent button fits and centers the whole drawing; press it again for 100% at the start corner. Downloads are not affected by zoom or position.') +
+    row('&darr; &rarr;', 'The arrow button beside the zoom buttons switches the drawing between left to right and top to bottom (also in Settings). Top to bottom keeps blocks upright, turns circuit parts to run down the page with their name and value beside them, puts branches in columns to the right and the ground return on the right (or the left, with the ground set to top).') +
     row('Click a block', 'Steps through its shapes and writes the word into the script (a drag never counts as a click).') +
     '</table><h3>Rejoining</h3><p>A pending return rejoins after the last element of the next line on its target level. When several are pending for the same level, they rejoin in the order the branches were created.</p>' +
     '<h3>Drawing</h3><table>' +
@@ -1632,12 +1754,23 @@ if (typeof document !== 'undefined') {
     const r = setForm.querySelector(`input[name="${k}"][value="${SETTINGS[k]}"]`);
     if (r) r.checked = true;
   }
+  // The direction lives in two places, the Settings page and the arrow button by the zoom buttons; both write the
+  // same setting, and the button shows the direction a press switches to.
+  const dirBtn = document.getElementById('dirBtn');
+  function syncDir() {
+    const td = SETTINGS.direction === 'td', label = td ? 'Draw left to right' : 'Draw top to bottom';
+    dirBtn.innerHTML = td ? '&rarr;' : '&darr;'; dirBtn.title = label; dirBtn.setAttribute('aria-label', label);
+    const r = setForm.querySelector(`input[name="direction"][value="${SETTINGS.direction}"]`);
+    if (r) r.checked = true;
+  }
+  function saveSettings() { try { localStorage.setItem('shorthand_schematic_v6_settings', JSON.stringify(SETTINGS)); } catch (err) {} }
   setForm.addEventListener('change', e => {
     if (!(e.target.name in SETTINGS)) return;
     SETTINGS[e.target.name] = e.target.value;
-    try { localStorage.setItem('shorthand_schematic_v6_settings', JSON.stringify(SETTINGS)); } catch (err) {}
-    update();
+    saveSettings(); syncDir(); update();
   });
+  dirBtn.onclick = () => { SETTINGS.direction = SETTINGS.direction === 'td' ? 'lr' : 'td'; saveSettings(); syncDir(); update(); };
+  syncDir();
   document.getElementById('settings').onclick = () => setDlg.showModal();
   document.getElementById('setClose').onclick = () => setDlg.close();
   setDlg.addEventListener('click', e => { if (e.target === setDlg) setDlg.close(); });
