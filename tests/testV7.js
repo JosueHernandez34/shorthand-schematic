@@ -181,7 +181,23 @@ ok('but not inside a value, bracketed or not', ex('*A\\ [PROC = red ') === '*A\\
 ok('Enter after PROC, DEC, IO and the parts types " = "', ['PROC', 'DEC', 'IO', 'RES', 'CAP', 'IND', 'VOLT_SRC', 'CURR_SRC', 'DEP_VOLT_SRC', 'DEP_CURR_SRC', 'AC_VOLT_SRC', 'AC_CURR_SRC'].every(w => en(H + '*A\\ ' + w) === H + '*A\\ ' + w + ' = '), ['PROC', 'RES', 'AC_VOLT_SRC'].map(w => JSON.stringify(en(H + '*A\\ ' + w))).join(' '));
 ok('inside a bracket and after a color too', en(H + '*A, B\\ [BLUE PROC') === H + '*A, B\\ [BLUE PROC = ' && en(H + '*A, B\\ PROC, RED RES') === H + '*A, B\\ PROC, RED RES = ');
 ok('a letter is written out first: r then Enter gives RES = ', en(H + '*A\\ R') === H + '*A\\ RES = ', JSON.stringify(en(H + '*A\\ R')));
-ok('words that take no value still move on: TRI, DIODE, GND', en(H + '*A\\ TRI') === H + '*A\\ TRI\n*' && en(H + '*A\\ DIODE') === H + '*A\\ DIODE\n*' && en(H + '*A\\ GND') === H + '*A\\ GND\n*', [en(H + '*A\\ TRI'), en(H + '*A\\ DIODE')].map(x => JSON.stringify(x)).join(' '));
+ok('words that take no value still move on: TRI, GND; DIODE now takes one', en(H + '*A\\ TRI') === H + '*A\\ TRI\n*' && en(H + '*A\\ GND') === H + '*A\\ GND\n*' && en(H + '*A\\ DIODE') === H + '*A\\ DIODE = ', [en(H + '*A\\ TRI'), en(H + '*A\\ DIODE')].map(x => JSON.stringify(x)).join(' '));
+
+// DIODE = [FWD_VOLT, REV_VOLT] (Josue, 11/25): constant drop, 0.7 V unless given, no breakdown unless REV is given
+const dv = (val, q, src) => { const t = P(`*G1, V1, R1, D1\\ GND, VOLT_SRC = ${src || 9}, RES = 1k, ${val}; NULL, NULL, ${q === 'I' ? 'MEAS I' : 'NULL'}, ${q === 'V' ? 'MEAS V' : 'NULL'}`); return t; };
+m = dv('DIODE', 'V');
+ok('a plain DIODE drops exactly 0.7 V', near(byLabel(m, 'D1').measNum, 0.7, 1e-6) && !m.errors.length && !m.warnings.length, show(m) + byLabel(m, 'D1').measNum);
+ok('and the rest of the loop follows by hand: (9 − 0.7) / 1k = 8.3 mA', near(byLabel(dv('DIODE', 'I'), 'R1').measNum, 8.3e-3, 1e-6));
+ok('DIODE = 0.3 sets FWD_VOLT (a Schottky)', near(byLabel(dv('DIODE = 0.3', 'V'), 'D1').measNum, 0.3, 1e-6));
+ok('a reversed diode with no REV_VOLT blocks: all 9 V across it, no current', near(byLabel(dv('DIODE REV', 'V'), 'D1').measNum, -9, 1e-6) && byLabel(dv('DIODE REV', 'I'), 'R1').measNum === 0);
+m = dv('DIODE REV = [0.7, 5.1]', 'V');
+ok('a reversed diode with REV_VOLT 5.1 breaks down and holds −5.1 V (a Zener)', near(byLabel(m, 'D1').measNum, -5.1, 1e-6) && near(byLabel(dv('DIODE REV = [0.7, 5.1]', 'I'), 'R1').measNum, 3.9e-3, 1e-6), show(m) + byLabel(m, 'D1').measNum);
+ok('below its REV_VOLT a Zener still blocks', near(byLabel(dv('DIODE REV = [, 12]', 'V'), 'D1').measNum, -9, 1e-6));
+ok('[, 12] keeps the 0.7 V default forward', near(byLabel(dv('DIODE = [, 12]', 'V'), 'D1').measNum, 0.7, 1e-6));
+ok('a source too small to reach FWD_VOLT leaves the diode off', near(byLabel(dv('DIODE', 'V', 0.5), 'D1').measNum, 0.5, 1e-6) && byLabel(dv('DIODE', 'I', 0.5), 'R1').measNum === 0);
+m = dv('DIODE = [0.7, -3]', 'V');
+ok('a REV_VOLT that is not above 0 stops the solve with the form', has(m.warnings, /D1 needs DIODE = FWD_VOLT or \[FWD_VOLT, REV_VOLT\]/), show(m));
+ok('the drawing shows the voltages under the diode', byLabel(dv('DIODE = [0.7, 5.1]', 'V'), 'D1').value === '0.7 V / 5.1 V' && byLabel(dv('DIODE = 0.3', 'V'), 'D1').value === '0.3 V');
 ok('Enter right after = does nothing', en(H + '*A\\ PROC = ') === H + '*A\\ PROC = ' && en(H + '*A, B\\ [RES =') === H + '*A, B\\ [RES =');
 ok('anything after = lets Enter go on, even a value that is not valid', en(H + '*A\\ RES = ?') === H + '*A\\ RES = ?\n*' && en(H + '*A, B\\ [RES = x') === H + '*A, B\\ [RES = x], ');
 ok('a value word inside a value is just text', en(H + '*A\\ IO = read proc') === H + '*A\\ IO = read proc\n*');

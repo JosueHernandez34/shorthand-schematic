@@ -248,6 +248,12 @@ const PREFIX_OUT = { '-12': 'p', '-9': 'n', '-6': 'µ', '-3': 'm', '0': '', '3':
 // The number may carry a power (4.7e3), which is why e stopped meaning end. The result is the value with real
 // symbols (4.7 kΩ, 10 µF); a typed power is rewritten in engineering form. Anything else is shown as typed.
 function eeValue(kind, value) {
+  // a diode shows FWD_VOLT, and REV_VOLT when it breaks down: 0.7 V, or 0.7 V / 5.1 V
+  if (kind === 'D' && value != null) {
+    const d = readDiode(value);
+    const volts = x => +x.toPrecision(3) + ' V'; // in volts, the way diode drops are quoted, not 700 mV
+    return d ? volts(d.fwd) + (d.rev !== null ? ' / ' + volts(d.rev) : '') : value;
+  }
   const ee = EE[kind];
   if (!ee || !ee.unit || value == null) return value;
   // an AC source shows its sinusoid tidied (5 cos(377t + 30°) V), keeping the cos or sin that was typed
@@ -536,7 +542,7 @@ const COLOR_WORDS = Object.keys(COLORS).map(c => c.toUpperCase());
 // forms), the part words, MEAS, REV and the AC forms. They are only rewritten as capitals; the parser reads any case.
 // The words that expect a value after = (Josue, 11/25): PROC, DEC and IO show one in the block, and every part but
 // the diode and GND needs a number. Enter after one of them types " = " instead of moving on.
-const VALUE_SHAPES = new Set(['proc', 'dec', 'io', 'R', 'C', 'L', 'VS', 'IS', 'DVS', 'DIS', 'VAC', 'IAC']);
+const VALUE_SHAPES = new Set(['proc', 'dec', 'io', 'R', 'C', 'L', 'D', 'VS', 'IS', 'DVS', 'DIS', 'VAC', 'IAC']);
 const takesValue = w => VALUE_SHAPES.has(shapeOf(w));
 const OTHER_WORDS = ['null', 'meas', 'rev', 'pole', 'polar', 'rect', 'rectangular', 'sine', 'sinusoidal', 'voltage', 'current'];
 const SPEC_WORDS = new Set([...Object.keys(SHAPE_WORDS).filter(k => k.length > 1), ...OTHER_WORDS, ...Object.values(CODE_WORDS).map(w => w.toLowerCase())]);
@@ -849,7 +855,25 @@ function parseV2(lines, partial, errors, warnings) {
 // Directions follow the drawing: current flows left to right through a part unless it is marked REV. A source's
 // value is − to + along that direction. MEAS V reads + where the current enters, MEAS I reads along the arrow.
 // A dependent source's value is gain * V(name) or gain * I(name) of another part, for example [2*V(R1)].
-const GMIN = 1e-12, DIODE_IS = 1e-14, DIODE_VT = 0.025852;
+const GMIN = 1e-12;
+// The diode (Josue, 11/25) is the textbook constant-drop model: DIODE = [FWD_VOLT, REV_VOLT]. On, it holds exactly
+// FWD_VOLT (0.7 V unless given) from anode to cathode at any current; off, it is open; past REV_VOLT backwards it
+// breaks down and holds that voltage the other way (a Zener). With no REV_VOLT it never breaks down, since a real
+// part's breakdown ranges from about 5 V to 1000 V and any default would be a guess. A held voltage is stamped as a
+// very large conductance, so the error is about a nanovolt per milliamp.
+const DIODE_FWD = 0.7, DIODE_G = 1e6;
+// FWD_VOLT and REV_VOLT from a diode's value: one number is FWD_VOLT, [fwd, rev] both, and an empty place keeps the
+// default ([, 5.1]). null when a place holds something that is not a voltage.
+function readDiode(raw) {
+  if (raw == null || !String(raw).trim()) return { fwd: DIODE_FWD, rev: null };
+  const parts = splitTop(String(raw), ',').map(x => x.trim());
+  if (parts.length > 2) return null;
+  const num = t => t === '' ? undefined : eeNumber('VS', t);
+  const fwd = num(parts[0]), rev = num(parts[1] === undefined ? '' : parts[1]);
+  if (fwd !== undefined && !(fwd >= 0)) return null;
+  if (rev !== undefined && !(rev > 0)) return null;
+  return { fwd: fwd === undefined ? DIODE_FWD : fwd, rev: rev === undefined ? null : rev };
+}
 // Readings below this are the method, not the circuit: GMIN leaks about 1e-12 times the voltage, so a few pA flow
 // through an open capacitor. They show as 0.
 const READ_FLOOR = 1e-10;
@@ -1008,7 +1032,12 @@ function simulate(model) {
   for (const p of parts) {
     const s = p.n.shape;
     if (s === 'VS' || s === 'DVS' || s === 'L' || s === 'VAC') p.k = m++;
-    if (s === 'D' || AC_TWIN[s]) continue;
+    if (s === 'D') {
+      p.dio = readDiode(p.n.raw);
+      if (!p.dio) return stop(`${p.n.label} needs DIODE = FWD_VOLT or [FWD_VOLT, REV_VOLT], numbers in volts with REV_VOLT above 0, for example [0.7, 5.1] (it has "${p.n.raw}").`);
+      continue;
+    }
+    if (AC_TWIN[s]) continue;
     if ((s === 'C' || s === 'L') && !hasAC) continue; // open and short in DC, whatever their value
     if (s === 'DVS' || s === 'DIS') { p.ctrl = readControl(p.n.raw, s); if (!p.ctrl) return stop(`${p.n.label} needs a value: a number or gain*V(name) or gain*I(name), for example [2*V(R1)].`); continue; }
     p.val = eeNumber(s, p.n.raw);
@@ -1045,8 +1074,19 @@ function simulate(model) {
   const dcDriven = parts.some(p => p.n.shape === 'VS' || p.n.shape === 'IS' || (p.ctrl && !p.ctrl.ref));
   const solves = [...(dcDriven || !hasAC ? [0] : []), ...omegas];
   const S = N + m, T = 2 * S;
+  function diodeLine(p, state) {
+    if (state === 'on') return [DIODE_G, -DIODE_G * p.dio.fwd];
+    if (state === 'rev') return [DIODE_G, DIODE_G * p.dio.rev];
+    return [GMIN, 0];
+  }
+  function diodeV(p, x) {
+    const lo = p.n.rev ? p.b : p.a, hi = p.n.rev ? p.a : p.b;
+    return (lo >= 0 ? x[lo] : 0) - (hi >= 0 ? x[hi] : 0);
+  }
+  let lastStates = null;
   const solveAt = w => {
-    const vd = new Map(diodes.map(p => [p, 0.6]));
+    // each diode is on, off or broken down ('rev'); start them all on and correct the ones the answer contradicts
+    const st = new Map(diodes.map(p => [p, 'on']));
     let x = null;
     for (let it = 0; it < 200; it++) {
       // the unknowns are [real parts, imaginary parts]; a complex entry a + jb fills four places
@@ -1087,9 +1127,9 @@ function simulate(model) {
           } else if (w === 0) c = [g, 0];
           rhs(hi, c[0], c[1]); rhs(lo, -c[0], -c[1]);
         } else if (s === 'D') {
-          // anode is lo, cathode hi; linearized at the present diode voltage (a conductance plus a current)
-          const v = vd.get(p), e = Math.exp(Math.min(v / DIODE_VT, 80));
-          const id = DIODE_IS * (e - 1), gd = DIODE_IS * e / DIODE_VT + GMIN, ieq = id - gd * v;
+          // anode is lo, cathode hi. The current anode to cathode is I = g·(v − hold): on holds +FWD, broken down
+          // holds −REV, off is open (only GMIN, hold 0).
+          const [gd, ieq] = diodeLine(p, st.get(p));
           y(lo, hi, gd, 0);
           rhs(lo, -ieq, 0); rhs(hi, ieq, 0);
         }
@@ -1097,22 +1137,28 @@ function simulate(model) {
       x = solveLinear(A, z);
       if (!x) return null;
       if (!diodes.length) break;
-      let worst = 0;
+      // A state is wrong when its own answer contradicts it: on with current flowing backwards, broken down with
+      // current flowing forwards, or off with the voltage past FWD or past −REV. Small margins keep a diode sitting
+      // right at its threshold from flipping back and forth.
+      let changed = false;
       for (const p of diodes) {
-        const lo = p.n.rev ? p.b : p.a, hi = p.n.rev ? p.a : p.b;
-        const vNew = (lo >= 0 ? x[lo] : 0) - (hi >= 0 ? x[hi] : 0), vOld = vd.get(p);
-        // limit each step on the exponential, as SPICE does, so the iteration cannot overshoot and blow up
-        const step = vNew - vOld, lim = vNew > vOld + 2 * DIODE_VT && vNew > 0.3 ? vOld + DIODE_VT * Math.log(1 + step / DIODE_VT) : vNew;
-        worst = Math.max(worst, Math.abs(lim - vOld));
-        vd.set(p, lim);
+        const v = diodeV(p, x), cur = st.get(p), [gd, ieq] = diodeLine(p, cur), i = gd * v + ieq;
+        let next = cur;
+        if (cur === 'on' && i < -1e-12) next = 'off';
+        else if (cur === 'rev' && i > 1e-12) next = 'off';
+        else if (cur === 'off' && v > p.dio.fwd + 1e-9) next = 'on';
+        else if (cur === 'off' && p.dio.rev !== null && v < -p.dio.rev - 1e-9) next = 'rev';
+        if (next !== cur) { st.set(p, next); changed = true; }
       }
-      if (worst < 1e-9) break;
+      if (!changed) break;
       if (it === 199) return 'diodes';
     }
+    lastStates = st;
     return x;
   };
 
   // Readings for every MEAS marker: one term per solve, added up by superposition.
+  // (diodeLine and diodeV are hoisted from below so solveAt and the readings share them.)
   const terms = new Map(parts.filter(p => p.n.meas).map(p => [p, []]));
   for (const w of solves) {
     const x = solveAt(w);
@@ -1121,8 +1167,8 @@ function simulate(model) {
     for (const [p, list] of terms) {
       let re, im = 0;
       if (p.n.shape === 'D') {
-        const lo = p.n.rev ? p.b : p.a, hi = p.n.rev ? p.a : p.b, v = (lo >= 0 ? x[lo] : 0) - (hi >= 0 ? x[hi] : 0);
-        re = p.n.meas === 'V' ? v : DIODE_IS * (Math.exp(Math.min(v / DIODE_VT, 80)) - 1);
+        const v = diodeV(p, x), [gd, ieq] = diodeLine(p, lastStates.get(p));
+        re = p.n.meas === 'V' ? v : gd * v + ieq;
       } else {
         const r = reading(p, p.n.meas, w);
         [re, im] = r.c;
