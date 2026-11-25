@@ -11,7 +11,8 @@ current version. The git history keeps every step in between.
 
 | File | Significant change it marks |
 |---|---|
-| `shorthandSchematicV5b.html` | Current. Circuit parts in the same diagram as the blocks: `R` `C` `L` `D` and the sources `VS` `IS` `DVS` `DIS` (dependent ones as diamonds) drawn as symbols on the wire, values read in their unit with SI prefixes (`R = 4.7k` shows 4.7 kΩ, `C = 10u` shows 10 µF; `4.7kΩ`, `4.7k ohm`, `4.7e3` also work), single letters case-sensitive (`C` capacitor, `c` circle), small shorthand letters written out as capital words as you type (`s` then a space becomes `SERIES`; Backspace takes the whole word), click a part to step through the parts. |
+| `shorthandSchematicV6.html` | Current. Circuits close through a ground return drawn along the bottom (Settings can move it to the top); `GND` ties a point to ground (a branch with no return is left open); `MEAS` markers show DC readings from a built-in solver (modified nodal analysis: RES, CAP open, IND short, sources, Shockley diode, dependent sources `[2*V(R1)]` and `[0.5*I(R1)]`). AC sources `VAC` and `IAC` (`AC_VOLT_SRC = 5 cos(377t + 30)` or `[5, 377, 30]`) solved in phasors, one solve per omega, added by superposition. A reading is written in the form named after `MEAS`: `POLE`, `RECT` or `SINE` (`MEAS V RECT`). `RECT` is no longer a shape word, since a plain box is the default. Enter closes an open list with `\` or starts the next line with `*` typed, so it can replace the hotkey. A top-down view (arrow button by the zoom buttons, or Settings). A Settings page holds configurations: the ground position and the direction. |
+| `shorthandSchematicV5b.html` | Circuit parts in the same diagram as the blocks: `R` `C` `L` `D` and the sources `VS` `IS` `DVS` `DIS` (dependent ones as diamonds) drawn as symbols on the wire, values read in their unit with SI prefixes (`R = 4.7k` shows 4.7 kΩ, `C = 10u` shows 10 µF; `4.7kΩ`, `4.7k ohm`, `4.7e3` also work), single letters case-sensitive (`C` capacitor, `c` circle), small shorthand letters written out as capital words as you type (`s` then a space becomes `SERIES`; Backspace takes the whole word), click a part to step through the parts. |
 | `shorthandSchematicV5a.html` | Flow blocks and values: specifier groups (semicolons split property types, commas give one entry per element), `proc` `dec` `io` (letters `p d i`), values after `=` shown in the block (`[ ]` for values with commas), color words, yes/no on decisions, apostrophe hotkey, an end must be the last element of its path. |
 | `shorthandSchematicV4.html` | Visual editing: shape commands (`tri`, `rect`, `circ`, `dia`), click a block to change its shape, an endless white canvas with free pan and wheel zoom, a draggable and collapsible script panel, the schematic must be named first. |
 | `shorthandSchematicV3.html` | Working without the script panel: half-width collapsible panel, bottom current-line box, open-wait chips. |
@@ -39,7 +40,12 @@ Shorthand (tentative): `s` series, `b` branch, `w` wait, `r` return, `r2` return
 
 V5a specifier: `*A, B\ proc = read, dec red = [x > 10, y < 3]; branch wait`. Colors: red orange yellow green blue purple pink gray black.
 
-V5b circuit parts: `*R1, C1\ R = 4.7k, C = 10u; red, blue`. Sources: `VS` volts, `IS` amps, `DVS` and `DIS` dependent (an expression with `*` goes in brackets: `DVS = [2*Vx]`). Prefixes `p n u µ m k M G` (`m` milli, `M` mega). A diode's value is shown as typed.
+V5b circuit parts: `*R1, C1\ R = 4.7k, C = 10u; red, blue`. Sources: `VS` volts, `IS` amps, `DVS` and `DIS` dependent (an expression with `*` goes in brackets: `DVS = [2*Vx]`).
+Directional parts (`VS IS DVS DIS D`) are drawn negative to positive along the path; `REV` in the entry reverses one: `*V1\ VS REV = 5`. Everything is drawn in black unless a color word is given.
+Part codes are written out as you type: `R` RES, `C` CAP, `L` IND, `D` DIODE, `VS` VOLT_SRC, `IS` CURR_SRC, `DVS` DEP_VOLT_SRC, `DIS` DEP_CURR_SRC.
+`MEAS V` (shorthand `m`) marks the voltage across a part and `MEAS I` the current through it: `*R_1\ RES = 4.7k; MEAS V` draws `+ V −` over the resistor. The number comes later, with a circuit solver; a source cannot measure its own quantity. Prefixes `p n u µ m k M G` (`m` milli, `M` mega). A diode's value is shown as typed.
+V6 AC sources: `*V1, R1, C1\ AC_VOLT_SRC = 10 cos(1000t), RES = 1k, CAP = 1u; , , MEAS V` reads `7.07 V ∠ −45°` over the capacitor. The value is amplitude, omega in rad/s and angle in degrees, written as the sinusoid (`sin` also works, a prefix goes on the amplitude: `2m cos(1000t)`) or as `[amp, omega, angle]`. Codes `VAC` `IAC`, written out as `AC_VOLT_SRC` `AC_CURR_SRC`. Each source keeps its own omega; readings with several terms are written as a sum (`2 V + 3 V ∠ 0° @ 1000 rad/s`). The form goes after `MEAS`, per marker: `POLE` `7.07 V ∠ −45°` (the default), `RECT` `5 − j5 V`, `SINE` `7.07 cos(1000t − 45°) V`. From V6 `rect`, `rectangle` and `x` are no longer shapes: a box is the default, and an old script that uses them still draws a box, with a warning. A diode with AC sources is not solved yet (it needs a time simulation).
+
 From V5b, single letters are case-sensitive (capitals are parts, small letters are shapes and commands); full words match in any case.
 
 ## Tests
@@ -55,6 +61,7 @@ node tests/testNameFirst.js
 node tests/testEndRule.js
 node tests/testV5a.js
 node tests/testV5b.js
+node tests/testV6.js
 ```
 
 `testV2.js` to `testV5a.js` also run against other versions by changing `APP_FILE`.
