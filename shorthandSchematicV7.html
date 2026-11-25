@@ -393,6 +393,7 @@ function readEntry(entry) {
   }
   if (used === words.length && eq >= 0) {
     p.value = unbracket(entry.slice(eq + 1).trim());
+    if (!p.value) p.noValue = words[words.length - 1] || '=';
     // The value belongs to the word right before = (Josue, 11/25): PROC = cool down, never PROC BLUE = cool down,
     // where it would read as BLUE's value. Only a shape or a part takes one. It is still shown, with an error.
     const last = words[words.length - 1];
@@ -533,6 +534,10 @@ const CMD_WORDS = ['series', 'branch', 'return', 'wait', 'end'];
 const COLOR_WORDS = Object.keys(COLORS).map(c => c.toUpperCase());
 // Every other specifier word too (Josue, 11/25): the shapes (PROC, DEC, IO, TRI, CIRC, DIA, AUTO and their long
 // forms), the part words, MEAS, REV and the AC forms. They are only rewritten as capitals; the parser reads any case.
+// The words that expect a value after = (Josue, 11/25): PROC, DEC and IO show one in the block, and every part but
+// the diode and GND needs a number. Enter after one of them types " = " instead of moving on.
+const VALUE_SHAPES = new Set(['proc', 'dec', 'io', 'R', 'C', 'L', 'VS', 'IS', 'DVS', 'DIS', 'VAC', 'IAC']);
+const takesValue = w => VALUE_SHAPES.has(shapeOf(w));
 const OTHER_WORDS = ['null', 'meas', 'rev', 'pole', 'polar', 'rect', 'rectangular', 'sine', 'sinusoidal', 'voltage', 'current'];
 const SPEC_WORDS = new Set([...Object.keys(SHAPE_WORDS).filter(k => k.length > 1), ...OTHER_WORDS, ...Object.values(CODE_WORDS).map(w => w.toLowerCase())]);
 const EXPANDED = new RegExp('(?:' + [...new Set([...Object.values(LETTER_WORDS), ...Object.values(CODE_WORDS), 'END', ...COLOR_WORDS, ...[...SPEC_WORDS].map(w => w.toUpperCase())])].join('|') + '|RETURN\\^\\d+)');
@@ -702,6 +707,7 @@ function parseV2(lines, partial, errors, warnings) {
       // MEAS is refused on a source's own quantity (an error: it can only read the value back) and ignored on a
       // flow block (a warning: there is nothing electrical to measure there).
       if (p.oldRect) warnings.push(`Line ${ln}: ${p.oldRect} is no longer a shape (a plain box is the default, and RECT now means the rectangular form after MEAS); ignored on ${label}`);
+      if (p.noValue) warnings.push(`Line ${ln}: ${p.noValue} on ${label} has = but nothing after it. Type its value.`);
       let meas = p.meas;
       if (meas && !ee) { warnings.push(`Line ${ln}: MEAS only measures circuit parts; ignored on ${label}`); meas = undefined; }
       // GND is a connection with no two ends to read across, and its marker would sit on top of the ground sign
@@ -1412,6 +1418,11 @@ function enterAt(text, caret) {
   // after that, the dangling comma goes and the next line starts. After a word that is not in a bracket it still
   // starts the next line.
   const spec = before.slice(before.indexOf('\\') + 1);
+  // Enter right after = does nothing until something is typed after it (Josue, 11/25); anything will do
+  if (/=$/.test(spec)) return lineResult(text, caret);
+  // Enter right after a word that expects a value types " = " for it
+  const vw = spec.match(/(^|[\s,;[])([A-Za-z_]+)$/);
+  if (vw && takesValue(vw[2]) && inSpecifier(text.slice(ls, cut - vw[2].length))) return at(' = ');
   let depth = 0;
   for (const ch of spec) { if (ch === '[') depth++; else if (ch === ']' && depth > 0) depth--; }
   if (depth > 0) return at(']'.repeat(depth) + ', ');

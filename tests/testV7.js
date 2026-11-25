@@ -177,6 +177,16 @@ ok('Enter after a plain comma opens the next element\'s bracket', en(H + '*A, B\
 ok('Enter after a word still starts the next line', en(H + '*A, B\\ PROC, DIA') === H + '*A, B\\ PROC, DIA\n*', JSON.stringify(en(H + '*A, B\\ PROC, DIA')));
 ok('words inside an element bracket are written out in capitals too', ex('*A\\ [blue,') === '*A\\ [BLUE,' && ex('*A\\ [BLUE, proc ') === '*A\\ [BLUE, PROC ' && ex('*A\\ x, [res ') === '*A\\ x, [RES ');
 ok('but not inside a value, bracketed or not', ex('*A\\ [PROC = red ') === '*A\\ [PROC = red ' && ex('*A\\ DEC = [x, end ') === '*A\\ DEC = [x, end ' && ex('*A\\ [DEC = [x, blue ') === '*A\\ [DEC = [x, blue ');
+// Enter after a word that takes a value types " = ", and waits there until something is typed (Josue, 11/25)
+ok('Enter after PROC, DEC, IO and the parts types " = "', ['PROC', 'DEC', 'IO', 'RES', 'CAP', 'IND', 'VOLT_SRC', 'CURR_SRC', 'DEP_VOLT_SRC', 'DEP_CURR_SRC', 'AC_VOLT_SRC', 'AC_CURR_SRC'].every(w => en(H + '*A\\ ' + w) === H + '*A\\ ' + w + ' = '), ['PROC', 'RES', 'AC_VOLT_SRC'].map(w => JSON.stringify(en(H + '*A\\ ' + w))).join(' '));
+ok('inside a bracket and after a color too', en(H + '*A, B\\ [BLUE PROC') === H + '*A, B\\ [BLUE PROC = ' && en(H + '*A, B\\ PROC, RED RES') === H + '*A, B\\ PROC, RED RES = ');
+ok('a letter is written out first: r then Enter gives RES = ', en(H + '*A\\ R') === H + '*A\\ RES = ', JSON.stringify(en(H + '*A\\ R')));
+ok('words that take no value still move on: TRI, DIODE, GND', en(H + '*A\\ TRI') === H + '*A\\ TRI\n*' && en(H + '*A\\ DIODE') === H + '*A\\ DIODE\n*' && en(H + '*A\\ GND') === H + '*A\\ GND\n*', [en(H + '*A\\ TRI'), en(H + '*A\\ DIODE')].map(x => JSON.stringify(x)).join(' '));
+ok('Enter right after = does nothing', en(H + '*A\\ PROC = ') === H + '*A\\ PROC = ' && en(H + '*A, B\\ [RES =') === H + '*A, B\\ [RES =');
+ok('anything after = lets Enter go on, even a value that is not valid', en(H + '*A\\ RES = ?') === H + '*A\\ RES = ?\n*' && en(H + '*A, B\\ [RES = x') === H + '*A, B\\ [RES = x], ');
+ok('a value word inside a value is just text', en(H + '*A\\ IO = read proc') === H + '*A\\ IO = read proc\n*');
+m = P('*A, B\\ PROC = , RES =');
+ok('a word left with = and nothing after it warns', has(m.warnings, /PROC on A has = but nothing after it/) && has(m.warnings, /RES on B has = but nothing after it/), show(m));
 ok('a whole line typed with the aids parses clean', (() => { const q = A.parse(H + '*A, B\\ [BLUE, PROC = cool down], DIA\n*\\'); return !q.errors.length && !q.warnings.length && byLabel(q, 'A').color === 'blue'; })());
 
 // diagrams that are not circuits are left alone
