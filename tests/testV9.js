@@ -354,7 +354,7 @@ ok('floating chains are drawn at their stored place, anywhere on the canvas', ((
 ok('a dropped chain keeps clear of the canvas edge, with room for the zone label', (() => { const a = A.sheet('*R_1' + Q + ' RES'); A.render(a, { floatPos: { R_1: { x: -50, y: -50 } } }); const b = a.floatBoxes[0]; return b.x === 14 && b.y === 36; })());
 // the AC sources: minus, squiggle and plus along the wire; an arrow with a squiggle across its midpoint
 const acSvg = kind => A.render(A.sheet('*S_1' + Q + ' ' + kind));
-ok('the AC voltage source is a circle with a minus, a squiggle and a plus in a row', (() => { const sv = acSvg('AC_VOLT_SRC'); return /<circle[^>]*r="17"/.test(sv) && (sv.match(/ q2\.5 -6\.5 5 0 t5 0/g) || []).length === 1 && /v5"/.test(sv); })());
+ok('the AC voltage source is a circle with a minus, a plus and a squiggle across the wire, as in the current source', (() => { const sv = acSvg('AC_VOLT_SRC'); return /<circle[^>]*r="17"/.test(sv) && (sv.match(/q3\.5 1\.75 0 3\.5 t0 3\.5 t0 3\.5 t0 3\.5/g) || []).length === 1 && /v5"/.test(sv); })());
 ok('the AC current source is an arrow with a squiggle crossing its midpoint', (() => { const sv = acSvg('AC_CURR_SRC'); return /L[\d.]+ [\d.]+ L[\d.]+ [\d.]+/.test(sv) && /q4 2\.25 0 4\.5 t0 4\.5 t0 4\.5 t0 4\.5/.test(sv); })());
 // the chain of a reference sits in the middle of the longest straight run of its route
 ok('the chain is in the middle of the longest straight run of the line', (() => {

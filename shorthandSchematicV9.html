@@ -1771,7 +1771,7 @@ function groundSign(x, y, dir, stroke, sw) {
 
 // An EE part is drawn on the wire itself: leads from both edges of its slot to a symbol in the middle, so the
 // wires meet it at the left and right middle like every other block and the layout needs no special case.
-function eeSymbolSVG(kind, x0, y, w, stroke, sw, through, upright) {
+function eeSymbolSVG(kind, x0, y, w, stroke, sw, through) {
   const cx = x0 + w / 2, x1 = x0 + w;
   const a = `fill="none" stroke="${stroke}" stroke-width="${sw}" stroke-linejoin="round" stroke-linecap="round"`;
   const leads = half => `<path d="M${x0} ${y} H${cx - half} M${cx + half} ${y} H${x1}" ${a}/>`;
@@ -1800,19 +1800,19 @@ function eeSymbolSVG(kind, x0, y, w, stroke, sw, through, upright) {
   }
   // AC sources (Josue, 11/26): a circle with a minus, a squiggle and a plus in a row along the wire for a voltage source,
   // so it reads like the hand sketch with the wire running through it. A current source is the usual circle with an arrow
-  // along the wire, and a squiggle crossing the arrow at its midpoint, perpendicular to it. Both have a direction like
-  // their DC twins. Top to bottom the whole part is turned; the voltage source's squiggle is turned back so it stays upright.
+  // along the wire. In both the squiggle runs across the wire, perpendicular to it, at the middle (the voltage source's
+  // was along the wire at first and was turned to match, 11/26). Both have a direction like their DC twins.
   if (kind === 'VAC' || kind === 'IAC') {
     const r = 17;
     const mark = kind === 'VAC'
       ? `<path d="M${cx - 12.5} ${y} h5 M${cx + 7.5} ${y} h5 M${cx + 10} ${y - 2.5} v5" ${a} stroke-width="1.5"/>` +
-        `<path d="M${cx - 5} ${y} q2.5 -6.5 5 0 t5 0" ${a} stroke-width="1.6"${upright ? ` transform="rotate(-90 ${cx} ${y})"` : ''}/>`
+        `<path d="M${cx} ${y - 7} q3.5 1.75 0 3.5 t0 3.5 t0 3.5 t0 3.5" ${a} stroke-width="1.5"/>`
       : `<path d="M${cx - 11} ${y} H${cx + 10} M${cx + 5} ${y - 4.5} L${cx + 10.5} ${y} L${cx + 5} ${y + 4.5}" ${a} stroke-width="1.7"/>` +
         `<path d="M${cx - 0.5} ${y - 9} q4 2.25 0 4.5 t0 4.5 t0 4.5 t0 4.5" ${a} stroke-width="1.5"/>`;
     return leads(r) + `<circle cx="${cx}" cy="${y}" r="${r}" fill="#fff" stroke="${stroke}" stroke-width="${sw}"/>` + mark;
   }
   // GND: a ground sign hangs from the middle; the wire runs on to the right only when something follows (through)
-  if (kind === 'GND') return `<path d="M${x0} ${y} H${through ? x1 : cx} M${cx} ${y} V${y + 10}" ${a}/>` + groundSign(cx, y + 10, 1, stroke, sw);
+  if (kind === 'GND') return `<path d="M${x0} ${y} H${through ? x1 : cx}" ${a}/>` + groundSign(cx, y, 1, stroke, sw);
   // D: anode on the left, the bar (cathode) on the right
   return leads(10) + `<polygon points="${cx - 10},${y - 10} ${cx - 10},${y + 10} ${cx + 10},${y}" fill="${stroke}" stroke="${stroke}" stroke-width="${sw}" stroke-linejoin="round"/>` +
     `<path d="M${cx + 10} ${y - 10} V${y + 10}" ${a}/>`;
@@ -1890,14 +1890,14 @@ function renderSVG(model, hl, interactive) {
       : (td ? smallText('no', u.x + 12, u.y - 5) : smallText('no', u.x + 6, u.y + 18)));
   }
   // An end of the path that the single GND ties to ground gets its own small ground sign, so the connection is
-  // visible and not only implied. The sign faces down in both views; in top-down it hangs off a stub to the right so
-  // it does not sit on the wire.
+  // visible and not only implied. The sign faces down in both views and is drawn alone, with no stem
+  // (Josue, 11/26).
   for (const side of model.tied || []) {
     const a = nodes[model.mainStart], b = nodes[model.mainEnd];
     const [p, q] = side === 'start' ? [a.p - a.ext, a.q] : [b.type === 'junction' ? b.p : b.p + b.ext, b.q];
     // the start's sign goes left of the wire, since the first part sits right against that end
-    const x = td ? q : p, y = td ? p : q, gx = td ? x + (side === 'start' ? -14 : 12) : x;
-    o.push(`<path d="M${x} ${y}${td ? ` H${gx}` : ''} V${y + 10}" fill="none" stroke="${INK}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" class="tie"/>` + groundSign(gx, y + 10, 1, INK, 2));
+    const x = td ? q : p, y = td ? p : q;
+    o.push(`<g class="tie">${groundSign(x, y, 1, INK, 2)}</g>`); // just the sign, on the end of the wire
   }
   const h = CFG.H, hasOut = new Set(edges.map(([a]) => a));
   for (const n of nodes) {
@@ -1925,14 +1925,13 @@ function renderSVG(model, hl, interactive) {
       // and leaves the leads where the wires meet them. Top-down then turns it a quarter clockwise, so what ran
       // left to right runs top to bottom.
       // The ground sign always faces down (Josue, 11/25), so in top-down it is not turned with the other parts: the
-      // wire runs down the page and the bars sit under the point. When the path carries on, the sign hangs off a
-      // short stub to the right instead of sitting on the wire.
+      // wire runs down the page and the bars sit on the point, with no stem or hook (Josue, 11/26).
       if (td && n.shape === 'GND') {
-        const top = n.y - n.w / 2, bot = n.y + n.w / 2, thru = hasOut.has(n.id), gx = thru ? n.x + 12 : n.x;
+        const top = n.y - n.w / 2, bot = n.y + n.w / 2, thru = hasOut.has(n.id);
         const ga = `fill="none" stroke="${stroke}" stroke-width="${sw}" stroke-linejoin="round" stroke-linecap="round"`;
-        o.push(`<path d="M${n.x} ${top} V${thru ? bot : n.y + 10}${thru ? ` M${n.x} ${n.y} H${gx} V${n.y + 10}` : ''}" ${ga}/>` + groundSign(gx, n.y + 10, 1, stroke, sw));
+        o.push(`<path d="M${n.x} ${top} V${thru ? bot : n.y}" ${ga}/>` + groundSign(n.x, n.y, 1, stroke, sw));
       } else {
-        const sym = eeSymbolSVG(n.shape, x0, n.y, n.w, stroke, sw, hasOut.has(n.id), td);
+        const sym = eeSymbolSVG(n.shape, x0, n.y, n.w, stroke, sw, hasOut.has(n.id));
         const flat = n.rev ? `<g transform="matrix(-1 0 0 1 ${2 * n.x} 0)" class="rev">${sym}</g>` : sym;
         o.push(td ? `<g transform="rotate(90 ${n.x} ${n.y})">${flat}</g>` : flat);
       }
