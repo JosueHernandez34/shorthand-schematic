@@ -350,7 +350,12 @@ shf = A.sheet(TWO.replace(/@/g, Q));
 const dragged = A.render(shf, { designPos: { Two: { x: 500, y: 40 } } });
 ok('a design with a stored place is drawn there, the others stay put', (() => { const m = [...dragged.matchAll(/class="frame" data-design="(\d+)" x="(\d+)" y="(\d+)"/g)].map(x => [+x[2], +x[3]]); return m[1][0] === 500 && m[1][1] === 40 && m[0][0] === 24; })());
 ok('the sheet reports every frame and floating chain for dragging', shf.frameBoxes.length === 2 && shf.frameBoxes[1].title === 'Two' && Array.isArray(shf.floatBoxes));
-ok('floating chains are drawn at their stored place', (() => { const t = '*R_1@ RES\n*C_1@ CAP'.replace(/@/g, Q); const a = A.sheet(t); A.render(a, { floatPos: { C_1: { x: 120, y: 5 } } }); const b = a.floatBoxes.find(x => x.key === 'C_1'); return b.px === 120 && b.py === 5; })());
+ok('floating chains are drawn at their stored place, anywhere on the canvas', (() => { const t = '*R_1' + Q + ' RES' + String.fromCharCode(10) + '*C_1' + Q + ' CAP'; const a = A.sheet(t); A.render(a, { floatPos: { C_1: { x: 320, y: 90 } } }); const b = a.floatBoxes.find(x => x.key === 'C_1'); return b.x === 320 && b.y === 90; })());
+ok('a dropped chain keeps clear of the canvas edge, with room for the zone label', (() => { const a = A.sheet('*R_1' + Q + ' RES'); A.render(a, { floatPos: { R_1: { x: -50, y: -50 } } }); const b = a.floatBoxes[0]; return b.x === 14 && b.y === 36; })());
+// the AC sources: minus, squiggle and plus along the wire; an arrow with a squiggle across its midpoint
+const acSvg = kind => A.render(A.sheet('*S_1' + Q + ' ' + kind));
+ok('the AC voltage source is a circle with a minus, a squiggle and a plus in a row', (() => { const sv = acSvg('AC_VOLT_SRC'); return /<circle[^>]*r="17"/.test(sv) && (sv.match(/ q2\.5 -6\.5 5 0 t5 0/g) || []).length === 1 && /v5"/.test(sv); })());
+ok('the AC current source is an arrow with a squiggle crossing its midpoint', (() => { const sv = acSvg('AC_CURR_SRC'); return /L[\d.]+ [\d.]+ L[\d.]+ [\d.]+/.test(sv) && /q4 2\.25 0 4\.5 t0 4\.5 t0 4\.5 t0 4\.5/.test(sv); })());
 // the chain of a reference sits in the middle of the longest straight run of its route
 ok('the chain is in the middle of the longest straight run of the line', (() => {
   const t = '*One@\n*A, B, C@ PROC, PROC, PROC; REF = Two.Y\n*@\n*Two@\n*X, Y, Z@ PROC, PROC, PROC\n*@'.replace(/@/g, Q);
