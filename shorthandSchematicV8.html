@@ -1,0 +1,2564 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shorthand to Schematic V8</title>
+<style>
+  :root { --bg:#f6f7f9; --panel:#fff; --ink:#1b2430; --muted:#66707d; --line:#d9dee5; --accent:#2457c5; --err:#b3261e; --warn:#8a5a00; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--ink); height:100vh; display:flex; flex-direction:column; }
+  header { padding:10px 16px; background:var(--panel); border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  header h1 { font-size:17px; margin:0; margin-right:auto; }
+  button { font:inherit; font-size:13px; padding:6px 12px; border:1px solid var(--line); background:#fff; border-radius:6px; cursor:pointer; color:var(--ink); }
+  button:hover { border-color:var(--accent); color:var(--accent); }
+  /* --leftw is the script panel width; dragging the divider sets it in pixels. The middle column is the divider. */
+  main { flex:1; display:grid; grid-template-columns: var(--leftw, max(140px, 19%)) 12px 1fr; min-height:0; }
+  #divider { position:relative; background:var(--line); cursor:col-resize; touch-action:none; user-select:none; }
+  #divider:hover, #divider.drag { background:var(--accent); }
+  #togglePanel { position:absolute; top:8px; left:0; width:12px; height:34px; padding:0; border:0; border-radius:0 6px 6px 0; background:var(--panel); color:var(--ink); font-size:14px; line-height:34px; cursor:pointer; box-shadow:0 0 0 1px var(--line); }
+  #togglePanel:hover { color:var(--accent); }
+  #rightPanel { user-select:none; cursor:grab; } #rightPanel.panning { cursor:grabbing; } #rightPanel .blk { cursor:pointer; }
+  /* Collapsed: the column shrinks to nothing and the left panel is hidden (not removed) so its text and undo history stay. */
+  main.collapsed { grid-template-columns: 0 12px 1fr; }
+  main.collapsed .left { visibility:hidden; overflow:hidden; }
+  main.collapsed #divider { cursor:default; }
+  .left { display:flex; flex-direction:column; background:var(--panel); min-height:0; min-width:0; overflow:hidden; }
+  /* Backdrop and textarea must share every font metric, or the highlighted lines drift off the text. */
+  .ed { position:relative; flex:1; min-height:0; background:#fff; }
+  #bd, #src { position:absolute; inset:0; margin:0; padding:14px; border:0; font:14px/21px ui-monospace, Consolas, Menlo, monospace; white-space:pre; tab-size:3; }
+  #bd { overflow:hidden; pointer-events:none; color:transparent; }
+  #bdIn { width:max-content; min-width:100%; }
+  #bd .bl { margin:0 -14px; padding:0 14px; min-height:21px; }
+  /* Bubble uses box-shadow instead of padding so the backdrop text keeps the textarea's exact character widths. */
+  #bd .wb { background:rgba(229,56,59,.4); border-radius:8px; box-shadow:0 0 0 2px rgba(229,56,59,.4); }
+  #bd .bl.strong { background:rgba(217,72,15,.24); }
+  #bd .bl.weak { background:rgba(229,154,58,.20); }
+  #src { width:100%; height:100%; resize:none; outline:none; background:transparent; color:var(--ink); overflow:auto; }
+  #msgs { border-top:1px solid var(--line); padding:8px 14px; font-size:13px; max-height:130px; overflow:auto; }
+  #msgs:empty { display:none; }
+  .err { color:var(--err); } .warn { color:var(--warn); }
+  code { background:#eef1f5; padding:1px 4px; border-radius:3px; font-size:12px; color:var(--ink); }
+  /* The canvas: plain white from edge to edge, no card, no scroll bars. The drawing is positioned by a transform. */
+  .right { position:relative; overflow:hidden; background:#fff; min-height:0; min-width:0; }
+  #out { position:absolute; left:0; top:0; transform-origin:0 0; will-change:transform; }
+  #out svg { display:block; }
+  #out .empty { width:min(640px, 80vw); }
+  .empty { padding:40px; color:var(--muted); }
+  .empty.err { color:var(--err); }
+  #errs { flex:1 1 100%; font-size:12px; color:var(--err); }
+  #errs:empty { display:none; }
+  #zoomBar { position:absolute; top:12px; right:14px; z-index:2; display:flex; gap:6px; }
+  #zoomBar button { min-width:36px; background:var(--panel); }
+  #bar { display:flex; align-items:center; gap:10px 14px; flex-wrap:wrap; padding:8px 16px; background:var(--panel); border-top:1px solid var(--line); }
+  #bar label { font-size:12px; color:var(--muted); }
+  #cur { flex:1 1 260px; min-width:200px; padding:6px 10px; border:1px solid var(--line); border-radius:6px; background:#fff; color:var(--ink); font:14px ui-monospace, Consolas, Menlo, monospace; }
+  #cur:focus { outline:2px solid var(--accent); outline-offset:-1px; }
+  #waits { display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:12px; color:var(--muted); }
+  /* Same red as the bubble in the script, so a chip and its bubble read as one thing. */
+  #waits .chip { color:var(--ink); background:rgba(229,56,59,.16); border:1px solid rgba(229,56,59,.55); border-radius:999px; padding:2px 10px; }
+  #waits .chip.in { background:rgba(229,56,59,.4); font-weight:600; }
+  /* The Settings page shares the Help dialog's frame so the two read as one family. */
+  #setDlg { width:min(560px, 94vw); max-height:86vh; overflow:auto; padding:0; border:1px solid var(--line); border-radius:10px; background:var(--panel); color:var(--ink); }
+  #setDlg::backdrop { background:rgba(27,36,48,.45); }
+  #setDlg .hh { position:sticky; top:0; display:flex; align-items:center; justify-content:space-between; padding:12px 18px; background:var(--panel); border-bottom:1px solid var(--line); }
+  #setDlg h2 { font-size:16px; margin:0; }
+  .setBody { padding:6px 18px 16px; font-size:13px; }
+  .setBody fieldset { border:1px solid var(--line); border-radius:8px; margin:12px 0 0; padding:8px 14px 12px; }
+  .setBody legend { font-weight:600; padding:0 4px; }
+  .setBody label { display:block; padding:4px 0; cursor:pointer; }
+  .setBody .hint { margin:2px 0 6px; color:var(--muted); }
+  #helpDlg { width:min(640px, 94vw); max-height:86vh; overflow:auto; padding:0; border:1px solid var(--line); border-radius:10px; background:var(--panel); color:var(--ink); }
+  #helpDlg::backdrop { background:rgba(27,36,48,.45); }
+  #helpDlg .hh { position:sticky; top:0; display:flex; align-items:center; justify-content:space-between; padding:12px 18px; background:var(--panel); border-bottom:1px solid var(--line); }
+  #helpDlg h2 { font-size:16px; margin:0; }
+  #helpBody { padding:6px 18px 16px; font-size:13px; }
+  #helpBody h3 { font-size:13px; margin:16px 0 6px; }
+  #helpBody table { border-collapse:collapse; width:100%; }
+  #helpBody td { padding:5px 8px 5px 0; vertical-align:top; border-top:1px solid var(--line); }
+  #helpBody th { text-align:left; font-weight:600; color:var(--muted); padding:0 8px 4px 0; }
+  #helpBody td:first-child { white-space:nowrap; width:1%; }
+  #helpBody svg { vertical-align:middle; }
+  /* Narrow screens stack the panels: the divider becomes a strip (no dragging) that still holds the toggle. */
+  @media (max-width:760px){
+    main { grid-template-columns:1fr; grid-template-rows: 45% 12px 1fr; }
+    main.collapsed { grid-template-columns:1fr; grid-template-rows: 0 12px 1fr; }
+    #divider, main.collapsed #divider { cursor:default; }
+    #togglePanel { top:0; left:auto; right:12px; width:34px; height:12px; line-height:10px; border-radius:0 0 6px 6px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Shorthand → Schematic <small style="font-weight:400;color:var(--muted)">V8</small></h1>
+  <button id="ex">Load example</button>
+  <button id="svg">Download SVG</button>
+  <button id="png">Download PNG</button>
+  <button id="settings" aria-haspopup="dialog">Settings</button>
+  <button id="help" aria-haspopup="dialog">Help</button>
+</header>
+<!-- Settings (V6): one page where configurations collect; each fieldset is one setting, saved per browser. -->
+<dialog id="setDlg" aria-labelledby="setTitle">
+  <div class="hh"><h2 id="setTitle">Settings</h2><button id="setClose" aria-label="Close settings">Close</button></div>
+  <form id="setForm" class="setBody" onsubmit="return false">
+    <fieldset>
+      <legend>Direction</legend>
+      <p class="hint">Which way the diagram runs. The arrow button beside the zoom buttons switches it too.</p>
+      <label><input type="radio" name="direction" value="lr"> Left to right (default)</label>
+      <label><input type="radio" name="direction" value="td"> Top to bottom</label>
+    </fieldset>
+  </form>
+</dialog>
+<dialog id="helpDlg" aria-labelledby="helpTitle">
+  <div class="hh"><h2 id="helpTitle">Legend</h2><button id="helpClose" aria-label="Close help">Close</button></div>
+  <div id="helpBody"></div>
+</dialog>
+<main>
+  <div class="left" id="leftPanel">
+    <div class="ed"><div id="bd"><div id="bdIn"></div></div><textarea id="src" spellcheck="false"></textarea></div>
+    <div id="msgs"></div>
+  </div>
+  <div id="divider" role="separator" aria-orientation="vertical" aria-label="Script panel border: drag or use the arrow keys to resize" tabindex="0">
+    <button id="togglePanel" aria-expanded="true" aria-controls="leftPanel" aria-label="Hide script panel" title="Hide script panel">&lsaquo;</button>
+  </div>
+  <div class="right" id="rightPanel">
+    <div id="zoomBar" role="group" aria-label="Zoom">
+      <button id="dirBtn" aria-label="Draw top to bottom" title="Draw top to bottom">&darr;</button>
+      <button id="zOut" aria-label="Zoom out">&minus;</button>
+      <button id="zFit" aria-label="Fit the diagram to the width"><span id="zPct">100%</span></button>
+      <button id="zIn" aria-label="Zoom in">+</button>
+    </div>
+    <div id="out"></div>
+  </div>
+</main>
+<footer id="bar">
+  <label for="cur">Current line</label>
+  <input id="cur" type="text" spellcheck="false" autocomplete="off" placeholder="*A, B\ branch wait">
+  <div id="waits" aria-live="polite"></div>
+  <div id="errs" role="alert"></div>
+</footer>
+
+<script>
+// ==CORE-START==
+const EXAMPLE = `*Schematic\\
+*S, A\\ SERIES
+*A_1\\ BRANCH WAIT
+*A_2, B_2\\ BRANCH RETURN^2
+*B_1\\ RETURN
+*B\\ SERIES
+*C, D\\ SERIES
+*E\\ END
+*\\
+`;
+
+// The file always holds * and \ (the period is only a typing hotkey, see the editor code). One reading
+// applies to every file: levels come from the commands, typed indentation and "meet" are ignored. The old
+// v1 example gives the same picture under this reading, so no separate old-file parser is kept.
+function parse(src, opts) {
+  const errors = [], warnings = [];
+  const lines = src.replace(/\t/g, '   ').split(/\r?\n/);
+  return parseV2(lines, !!(opts && opts.partial), errors, warnings);
+}
+
+// ---- Several designs on one canvas (V8, Josue 11/25) --------------------------------------------------------------
+// A design runs from its name line to its closing *\ . Whatever is written after a closing *\ is the next design,
+// which the canvas draws directly below the one above it, inside its own border. The closing line of the last design
+// may be missing while it is still being typed.
+const CLOSE_LINE = /^\s*\*\s*\\\s*$/;
+// Line ranges (1-based, inclusive) of every design in the text. A closing line that is also a design's first line is
+// not a close: a bare *\ there is an empty name, which the parser reports.
+function splitDesigns(lines) {
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (!lines[i].trim()) { i++; continue; }
+    let j = i + 1, end = i;
+    for (; j < lines.length; j++) {
+      if (lines[j].trim()) end = j;
+      if (CLOSE_LINE.test(lines[j])) { end = j; break; }
+    }
+    out.push({ start: i + 1, end: end + 1 });
+    i = end + 1;
+  }
+  return out;
+}
+// The design a line belongs to; a blank line between designs belongs to the one before it, so Enter under a closing
+// *\ is still on that design until something is typed. null when the text has no design yet.
+function designAt(lines, ln) {
+  const ds = splitDesigns(lines);
+  let hit = null;
+  for (const d of ds) if (d.start <= ln) hit = d;
+  return hit;
+}
+// True when line ln (1-based) is the first line of a design: nothing above it, or the design above is closed.
+function startsDesign(lines, ln) {
+  const above = lines.slice(0, ln - 1);
+  const last = [...above].reverse().find(l => l.trim());
+  return last === undefined || CLOSE_LINE.test(last);
+}
+// The text with every line above the design holding line ln blanked out: the reading helpers (highlight, waits) see
+// only that design, and the line numbers stay the same.
+function onlyDesignAt(lines, ln) {
+  const d = designAt(lines, ln);
+  return d ? lines.map((l, i) => i < d.start - 1 ? '' : l) : lines;
+}
+
+// Reads every design and the references between them. The sheet has the first design's errors and warnings first,
+// line numbers are those of the whole text, and every design keeps its own model for layout and drawing.
+function parseSheet(src, opts) {
+  const partial = !!(opts && opts.partial);
+  const lines = src.replace(/\t/g, '   ').split(/\r?\n/);
+  let spans = splitDesigns(lines);
+  if (!spans.length) spans = [{ start: 1, end: 0 }];
+  const designs = spans.map((d, k) => {
+    // blank lines in front keep every line number the one in the whole text
+    const chunk = Array(d.start - 1).fill('').concat(lines.slice(d.start - 1, d.end));
+    const m = parseV2(chunk, partial && k === spans.length - 1, [], []);
+    m.span = d;
+    return m;
+  });
+  const sheet = { designs, errors: [], warnings: [], nodes: [], badEnds: [], levels: new Map(), refs: [] };
+  for (const m of designs) {
+    sheet.errors.push(...m.errors); sheet.warnings.push(...m.warnings); sheet.nodes.push(...m.nodes);
+    sheet.badEnds.push(...m.badEnds);
+    for (const [k, v] of m.levels) sheet.levels.set(k, v);
+  }
+  const seen = new Map();
+  for (const m of designs) if (m.nodes.length) {
+    const k = m.title.toLowerCase();
+    if (seen.has(k)) sheet.warnings.push(`Line ${m.span.start}: another design is also named ${m.title}; a reference to ${m.title}.name cannot tell them apart.`);
+    seen.set(k, true);
+  }
+  resolveRefs(sheet);
+  return sheet;
+}
+// REF = name points at an element in the same design first, then in any other design; Design.name picks the design.
+// A name that fits nothing, or several elements in other designs, is an error that names the line. The links go in
+// sheet.refs as { from, to } pairs of nodes, with the design index of each.
+function resolveRefs(sheet) {
+  const { designs } = sheet;
+  const els = d => d.nodes.filter(n => n.type === 'el');
+  designs.forEach((d, di) => {
+    for (const n of d.nodes) {
+      if (n.type !== 'el') continue;
+      if (n.refMark && !n.refTo) sheet.warnings.push(`Line ${n.ln}: REF on ${n.label} needs a name: REF = name, or REF = [name, name] for several.`);
+      for (const t of n.refTo || []) {
+        let pool, dotted = t.lastIndexOf('.'), name = t;
+        if (dotted > 0) {
+          const dn = t.slice(0, dotted).trim().toLowerCase(); name = t.slice(dotted + 1).trim();
+          pool = designs.map((x, i) => [x, i]).filter(([x]) => x.title.toLowerCase() === dn);
+          if (!pool.length) { sheet.errors.push(`Line ${n.ln}: REF ${t} on ${n.label}: there is no design named ${t.slice(0, dotted).trim()}.`); continue; }
+        } else pool = [[d, di]];
+        let hits = pool.flatMap(([x, i]) => els(x).filter(e => e.label.toLowerCase() === name.toLowerCase() && e !== n).map(e => [e, i]));
+        // an unqualified name looks in the design first; only when it is not there are the others searched
+        if (!hits.length && dotted < 0) hits = designs.flatMap((x, i) => i === di ? [] : els(x).filter(e => e.label.toLowerCase() === name.toLowerCase()).map(e => [e, i]));
+        if (!hits.length) { sheet.errors.push(`Line ${n.ln}: REF ${t} on ${n.label}: no element is named ${name}.`); continue; }
+        if (hits.length > 1) { sheet.errors.push(`Line ${n.ln}: REF ${t} on ${n.label} fits ${hits.length} elements. Write the design too, like ${designs[hits[0][1]].title}.${name}.`); continue; }
+        if (!sheet.refs.some(r => r.from === n && r.to === hits[0][0])) sheet.refs.push({ from: n, to: hits[0][0], fromDesign: di, toDesign: hits[0][1] });
+      }
+    }
+  });
+}
+
+// Tolerates "return2" as well as "return^2" so the parser still works if the editor's
+// auto-conversion was bypassed (paste, another editor).
+// Shape words, flow blocks included: a word or a letter (tentative, like SHORT); "auto" keeps the default look
+// (pill for the start, flag for the end, plain box otherwise). Flow blocks are shapes too, so a line can mix them
+// with EE parts later: proc is a box, dec a diamond that shows its value, io a parallelogram. "d" moved from the
+// plain diamond to dec (Josue, 11/24); a dec with no value looks exactly like the old diamond, so v4 scripts hold.
+// EE parts (V5b) join the same table, so a line can mix flow blocks and circuit parts (no segregation, Josue 11/24).
+// Their letters are uppercase and the shape letters lowercase; only single letters are case-sensitive (Josue, 11/24),
+// so C is a capacitor and c a circle, D a diode and d a decision. Full words match in any case.
+// V6: the rect shape word is gone (Josue, 11/24): a plain box is already the default, and RECT now names the
+// rectangular form after MEAS. Old scripts still read; the word is passed over with a warning (see OLD_RECT).
+const SHAPE_WORDS = { tri: 'tri', triangle: 'tri', t: 'tri',
+  circ: 'circ', circle: 'circ', c: 'circ', dia: 'dia', diamond: 'dia', auto: 'auto',
+  proc: 'proc', process: 'proc', p: 'proc', dec: 'dec', decision: 'dec', d: 'dec', io: 'io', i: 'io',
+  R: 'R', resistor: 'R', C: 'C', capacitor: 'C', L: 'L', inductor: 'L', D: 'D', diode: 'D',
+  // Sources are two- and three-letter codes (Josue, 11/24): VS replaced the single V, and the D in DVS and DIS
+  // means dependent. Like every code longer than one letter they match in any case.
+  vs: 'VS', vsource: 'VS', is: 'IS', isource: 'IS', dvs: 'DVS', dvsource: 'DVS', dis: 'DIS', disource: 'DIS',
+  // AC sources (Josue, 11/24): VAC and IAC, written out as AC_VOLT_SRC and AC_CURR_SRC
+  vac: 'VAC', iac: 'IAC',
+  gnd: 'GND', ground: 'GND' };
+// The written-out word for each part code (Josue, 11/24: R turns into RES, C into CAP, VS into VOLT_SRC), which is
+// what the typing aid writes and what the legend shows. Each word is also accepted when typed.
+const CODE_WORDS = { R: 'RES', C: 'CAP', L: 'IND', D: 'DIODE', VS: 'VOLT_SRC', IS: 'CURR_SRC', DVS: 'DEP_VOLT_SRC', DIS: 'DEP_CURR_SRC',
+  VAC: 'AC_VOLT_SRC', IAC: 'AC_CURR_SRC', GND: 'GND' };
+for (const [k, w] of Object.entries(CODE_WORDS)) SHAPE_WORDS[w.toLowerCase()] = k;
+// MEAS (Josue, 11/24) names a quantity measured over a part: V the voltage across it, I the current through it.
+// Single letters are exact like every letter, the words match in any case. MEAS alone measures the voltage.
+const MEAS_QTY = { V: 'V', I: 'I', voltage: 'V', current: 'I' };
+const measOf = w => w && MEAS_QTY[w.length === 1 ? w : w.toLowerCase()];
+// How a MEAS marker writes an AC reading (Josue, 11/24): POLE, RECT or SINE after MEAS, in any case, for example
+// MEAS V RECT. Each marker picks its own form, so there is no app-wide setting; polar is used when none is given.
+const MEAS_FORM = { pole: 'polar', polar: 'polar', rect: 'rectangular', rectangular: 'rectangular', sine: 'sinusoidal', sinusoidal: 'sinusoidal' };
+const formOf = w => w && MEAS_FORM[w.toLowerCase()];
+// The old rectangle words (rect, rectangle, and the letter x exactly). They are accepted so v4 to V5b scripts still
+// draw, since a box is what they meant anyway, but they warn because RECT now means something else.
+const OLD_RECT = w => w === 'x' || ['rect', 'rectangle'].includes(w.toLowerCase());
+// A source's own quantity is its value, so measuring it would only read the value back (Josue: "I would not ask
+// to measure the voltage over a voltage source").
+const OWN_QTY = { VS: 'V', DVS: 'V', IS: 'I', DIS: 'I', VAC: 'V', IAC: 'I' };
+// A single letter is looked up exactly as typed; a word is looked up in lower case.
+const shapeOf = w => SHAPE_WORDS[w.length === 1 ? w : w.toLowerCase()];
+// EE parts: the unit their value is read in. A diode has none, so its value is shown as typed (Josue, 11/24).
+// units lists what may be typed after the number; single letters exactly, words in any case.
+const EE = {
+  R: { unit: 'Ω', units: ['Ω', 'Ω', 'ohm', 'ohms'] }, // the Greek omega and the separate ohm sign look the same
+  C: { unit: 'F', units: ['F', 'farad', 'farads'] },
+  L: { unit: 'H', units: ['H', 'henry', 'henries', 'henrys'] },
+  VS: { unit: 'V', units: ['V', 'volt', 'volts'] },
+  IS: { unit: 'A', units: ['A', 'amp', 'amps', 'ampere', 'amperes'] },
+  // A dependent source's value is usually an expression such as 2*Vx, which is not a number and so is shown as
+  // typed; a plain number still gets its unit.
+  DVS: { unit: 'V', units: ['V', 'volt', 'volts'] },
+  DIS: { unit: 'A', units: ['A', 'amp', 'amps', 'ampere', 'amperes'] },
+  D: { unit: '' },
+  // AC sources: the value is a sinusoid, 5 cos(377t + 30) or [5, 377, 30] (see readAC); the unit is the amplitude's
+  VAC: { unit: 'V', units: ['V', 'volt', 'volts'] },
+  IAC: { unit: 'A', units: ['A', 'amp', 'amps', 'ampere', 'amperes'] },
+  // V6: ground on purpose. A branch with no return is left open (Josue, 11/24), so GND is how a point is tied to
+  // ground, for example a capacitor to ground: *C1, G1\ CAP = 10u, GND; BRANCH
+  GND: { unit: '' },
+};
+// Settings the person picks on the Settings page (V6). The core reads them from here so node checks can set them too.
+// V7: the ground return is gone (Josue, 11/25): ground is only where GND is written, so the only setting left is the
+// direction. (The AC form lives on each MEAS marker: POLE, RECT or SINE.)
+// direction: lr draws left to right, td top to bottom (Josue, 11/24: a top-down view toggle).
+const SETTINGS = { direction: 'lr' };
+// Parts with a direction (Josue, 11/24). Each is drawn negative to positive along the path, so current flows left to
+// right: a voltage source has − on the left and + on the right, a current source's arrow points along the path, a
+// diode's anode is on the left. The word REV in a part's entry (VS REV = 5) mirrors it to positive to negative.
+const DIRECTIONAL = new Set(['VS', 'IS', 'DVS', 'DIS', 'VAC', 'IAC', 'D']);
+// An AC source reads its amplitude like its DC twin, so 2m on AC_CURR_SRC is 2 mA.
+const AC_TWIN = { VAC: 'VS', IAC: 'IS' };
+// The name of an EE part is drawn small above its symbol. Josue's 11/24 note says a part with no value is drawn
+// with "no label"; CC reads that as no value label and keeps the name so parts stay identifiable. False hides it.
+const SHOW_EE_NAME = true;
+// What each shape is drawn as; flow words reuse the plain shapes where they look the same.
+const DRAW_AS = { proc: 'rect', dec: 'dia' };
+// Wider than a box so the label still fits inside a triangle, circle, diamond or parallelogram.
+const SHAPE_WIDTH = { tri: 1.3, circ: 1.15, dia: 1.45, dec: 1.45, io: 1.25 };
+
+// SI prefixes (Josue, 11/24): m is milli and M mega because single letters are case-sensitive; u and µ are micro.
+const PREFIX = { p: -12, n: -9, u: -6, 'µ': -6, 'μ': -6, m: -3, '': 0, k: 3, M: 6, G: 9 };
+const PREFIX_OUT = { '-12': 'p', '-9': 'n', '-6': 'µ', '-3': 'm', '0': '', '3': 'k', '6': 'M', '9': 'G' };
+// An EE value is a number, an optional prefix and an optional unit: 4.7k, 4.7kΩ, 4.7k ohm, 10u, 10 µF.
+// The number may carry a power (4.7e3), which is why e stopped meaning end. The result is the value with real
+// symbols (4.7 kΩ, 10 µF); a typed power is rewritten in engineering form. Anything else is shown as typed.
+function eeValue(kind, value) {
+  // a diode shows FWD_VOLT, and REV_VOLT when it breaks down: 0.7 V, or 0.7 V / 5.1 V
+  if (kind === 'D' && value != null) {
+    const d = readDiode(value);
+    const volts = x => +x.toPrecision(3) + ' V'; // in volts, the way diode drops are quoted, not 700 mV
+    return d ? volts(d.fwd) + (d.rev !== null ? ' / ' + volts(d.rev) : '') : value;
+  }
+  const ee = EE[kind];
+  if (!ee || !ee.unit || value == null) return value;
+  // an AC source shows its sinusoid tidied (5 cos(377t + 30°) V), keeping the cos or sin that was typed
+  if (AC_TWIN[kind]) { const ac = readAC(kind, value); return ac ? fmtSinusoid(ac.amp, ac.w, ac.typedPh, ee.unit, ac.fn) : value; }
+  const m = value.trim().match(/^([+-]?(?:\d+(?:\.\d*)?|\.\d+))(?:e([+-]?\d+))?\s*([pnuµμmkMG]?)\s*(\S*)$/);
+  if (!m) return value;
+  const unitOk = u => !u || ee.units.some(x => x.length === 1 ? x === u : x === u.toLowerCase());
+  let [, num, pow, pre, unit] = m;
+  // a unit for another part (10 kH on a resistor) is a typo worth seeing, so the value stays as typed
+  if (!unitOk(unit)) return value;
+  if (pow !== undefined) {
+    const x = parseFloat(num) * Math.pow(10, +pow + PREFIX[pre]);
+    if (!isFinite(x)) return value;
+    const e3 = x === 0 ? 0 : Math.max(-12, Math.min(9, Math.floor(Math.log10(Math.abs(x)) / 3) * 3));
+    num = String(+(x / Math.pow(10, e3)).toPrecision(6)); pre = PREFIX_OUT[e3];
+  } else pre = PREFIX_OUT[PREFIX[pre]];
+  return num + ' ' + pre + ee.unit;
+}
+// The number a value stands for, for the solver (V6): 4.7k is 4700, 10u is 1e-5. Read with the same rules as
+// eeValue so a value shows and solves alike; NaN when it is not a number in the part's unit.
+function eeNumber(kind, value) {
+  const ee = EE[kind];
+  if (!ee || value == null) return NaN;
+  const m = String(value).trim().match(/^([+-]?(?:\d+(?:\.\d*)?|\.\d+))(?:e([+-]?\d+))?\s*([pnuµμmkMG]?)\s*(\S*)$/);
+  if (!m) return NaN;
+  const [, num, pow, pre, unit] = m;
+  if (unit && !(ee.units || []).some(x => x.length === 1 ? x === unit : x === unit.toLowerCase())) return NaN;
+  return parseFloat(num) * Math.pow(10, (pow ? +pow : 0) + PREFIX[pre]);
+}
+// A result in engineering form with three significant figures and its unit: 0.00106 A is 1.06 mA.
+function fmtEng(x, unit) {
+  if (!isFinite(x)) return '?';
+  if (Math.abs(x) < 1e-15) return '0 ' + unit;
+  let e3 = Math.max(-12, Math.min(9, Math.floor(Math.log10(Math.abs(x)) / 3) * 3));
+  let m = +(x / Math.pow(10, e3)).toPrecision(3);
+  // 0.99996 V rounds to 1000 mV; step up a prefix so it reads 1 V
+  if (Math.abs(m) >= 1000 && e3 < 9) { e3 += 3; m = +(x / Math.pow(10, e3)).toPrecision(3); }
+  return (m < 0 ? '−' : '') + Math.abs(m) + ' ' + PREFIX_OUT[e3] + unit;
+}
+// An AC result (a phasor re + j·im at angular frequency w, in rad/s) written in the form chosen on the Settings
+// page. The phasor is the cosine reference: A ∠ φ is A cos(wt + φ).
+function formatPhasor(re, im, unit, form, w) {
+  const mag = Math.hypot(re, im), ang = Math.atan2(im, re) * 180 / Math.PI;
+  if (form === 'rectangular') {
+    const big = Math.max(Math.abs(re), Math.abs(im));
+    const e3 = big < 1e-15 ? 0 : Math.max(-12, Math.min(9, Math.floor(Math.log10(big) / 3) * 3));
+    const n = v => +(v / Math.pow(10, e3)).toPrecision(3);
+    return `${n(re)} ${im < 0 ? '−' : '+'} j${Math.abs(n(im))} ${PREFIX_OUT[e3]}${unit}`;
+  }
+  // Josue's own way of writing a source (11/24): amplitude, omega and angle, so the result reads the same way
+  if (form === 'sinusoidal') return fmtSinusoid(mag, w, ang, unit, 'cos');
+  return `${fmtEng(mag, unit)} ∠ ${fmtDeg(ang)}`;
+}
+// a real minus sign, as fmtEng writes; || 0 turns −0 into 0
+const fmtDeg = a => { const d = +a.toFixed(1) || 0; return (d < 0 ? '−' : '') + Math.abs(d) + '°'; };
+// 5 cos(377t + 30°) V. The prefix goes with the unit at the end, as in 2 cos(1000t) mA; a zero angle is left out.
+function fmtSinusoid(amp, w, ang, unit, fn) {
+  const [a, u] = fmtEng(amp, unit).split(' ');
+  const ph = Math.abs(ang) < 0.05 ? '' : ` ${ang < 0 ? '−' : '+'} ${fmtDeg(Math.abs(ang))}`;
+  return `${a} ${fn || 'cos'}(${w == null ? 'ω' : +(+w).toPrecision(6)}t${ph}) ${u || ''}`.trim();
+}
+// An AC source's value (Josue, 11/24): its amplitude, omega (rad/s) and angle (degrees), written as the sinusoid
+// itself, 5 cos(377t + 30), or as the three numbers, [5, 377, 30]. sin is accepted and is cos shifted by −90°.
+// The amplitude takes a prefix and the source's unit (2m, 2mA); the angle may carry ° or deg. Returns
+// { amp, w, ph } with ph the cosine-reference angle, plus fn and typedPh for showing it as typed; null otherwise.
+function readAC(kind, raw) {
+  if (raw == null) return null;
+  const twin = AC_TWIN[kind], s = String(raw).trim().replace(/^\[|\]$/g, '').trim();
+  const NUM = '[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:e[+-]?\\d+)?';
+  const num = t => new RegExp('^' + NUM + '$').test(t) ? parseFloat(t) : NaN;
+  const deg = t => num(String(t).trim().replace(/\s*(?:°|deg)$/i, ''));
+  let amp, w, ph = 0, fn = 'cos';
+  const list = splitTop(s, ',').map(t => t.trim());
+  if (list.length === 2 || list.length === 3) {
+    [amp, w] = [eeNumber(twin, list[0]), num(list[1])];
+    if (list.length === 3) ph = deg(list[2]);
+  } else {
+    // the amplitude is lazy so "5 V cos" leaves cos to the function; an empty amplitude is 1, as in cos(377t)
+    const m = s.match(new RegExp('^(.*?)\\s*(cos|sin|Cos|Sin|COS|SIN)\\s*\\(\\s*(' + NUM + ')\\s*\\*?\\s*t\\s*(?:([+-])\\s*(' + NUM + ')\\s*(?:°|deg)?)?\\s*\\)\\s*(\\S*)$'));
+    if (!m) return null;
+    amp = m[1].trim() ? eeNumber(twin, m[1]) : 1;
+    w = parseFloat(m[3]); fn = m[2].toLowerCase();
+    if (m[5] !== undefined) ph = (m[4] === '-' ? -1 : 1) * parseFloat(m[5]);
+    if (m[6] && !isFinite(eeNumber(twin, '1' + m[6]))) return null; // a unit after the bracket must be the source's
+  }
+  if (![amp, w, ph].every(isFinite)) return null;
+  return { amp, w, ph: fn === 'sin' ? ph - 90 : ph, typedPh: ph, fn };
+}
+// Color words: a light fill keeps the label readable, the outline and label carry the color.
+const COLORS = {
+  red: { stroke: '#c92a2a', fill: '#ffe3e3' }, orange: { stroke: '#d9480f', fill: '#ffe8cc' },
+  yellow: { stroke: '#946c00', fill: '#fff3bf' }, green: { stroke: '#2b8a3e', fill: '#d3f9d8' },
+  blue: { stroke: '#1971c2', fill: '#d0ebff' }, purple: { stroke: '#6741d9', fill: '#e5dbff' },
+  pink: { stroke: '#c2255c', fill: '#ffdeeb' }, gray: { stroke: '#495057', fill: '#e9ecef' },
+  grey: { stroke: '#495057', fill: '#e9ecef' }, black: { stroke: '#111111', fill: '#dee2e6' },
+};
+
+// Split on sep, but not inside [ ], so a bracketed value may hold commas and semicolons.
+function splitTop(s, sep) {
+  const out = []; let depth = 0, cur = '';
+  for (const ch of s) {
+    if (ch === '[') depth++;
+    else if (ch === ']' && depth > 0) depth--;
+    if (ch === sep && depth === 0) { out.push(cur); cur = ''; } else cur += ch;
+  }
+  out.push(cur);
+  return out;
+}
+
+// The specifier is semicolon groups; in each group the commas give one entry per element, in the order of the
+// names. Entries in one group need not be the same kind (Josue, 11/25): each is recognized by its own words, so
+// "PROC, RED, MEAS V" gives a shape, a color and a marker to three elements. An entry holds bare words (shape, color,
+// REV, MEAS, END, NULL) and an optional "= value". NULL fills a place to skip an element ("NULL, END" ends the
+// second). Several specifiers for one element go in brackets, "[BLUE PROC = cool down, MEAS I]", so a group need not
+// be restarted with a semicolon; a bracket after = is still a value. The first word that is not a property starts the
+// behavior part, and everything after it in that group is behavior or comment: that keeps the v4 form
+// "tri, circ, branch wait" and the v4 rule that a shape word after a command is not a shape.
+function readEntry(entry) {
+  const eq = entry.indexOf('=');
+  const words = (eq < 0 ? entry : entry.slice(0, eq)).trim().split(/\s+/).filter(Boolean);
+  const p = {}; let used = 0, bad = null;
+  for (let wi = 0; wi < words.length; wi++) {
+    const w = words[wi], lw = w.toLowerCase();
+    if (shapeOf(w) && !p.shape) p.shape = shapeOf(w);
+    else if (w.length > 1 && COLORS[lw] && !p.color) p.color = lw;
+    else if (lw === 'rev' && !p.rev) p.rev = true;
+    // END marks the element it is paired with (Josue, 11/25), so it is an element property like a shape
+    else if (lw === 'end' && !p.end) p.end = true;
+    else if (lw === 'null') p.skip = true;
+    // REF (V8, Josue 11/25) points this element at another one, possibly in another design; its value is the name
+    else if (lw === 'ref' && !p.refMark) p.refMark = true;
+    else if (lw === 'meas' && !p.meas) { // MEAS takes a quantity and a form after it, in either order
+      let q = null;
+      for (let k = 0, nx; k < 2 && (nx = words[wi + 1]); k++) {
+        if (measOf(nx) && !q) q = measOf(nx);
+        else if (formOf(nx) && !p.measForm) p.measForm = formOf(nx);
+        else break;
+        wi++; used++;
+      }
+      p.meas = q || 'V';
+    }
+    else if (OLD_RECT(w) && !p.shape && !p.oldRect) p.oldRect = w;
+    else break;
+    used++;
+  }
+  if (used === words.length && eq >= 0) {
+    p.value = unbracket(entry.slice(eq + 1).trim());
+    if (!p.value) p.noValue = words[words.length - 1] || '=';
+    // REF = X2, or REF = [X2, Design.Y] for several: the value is the names it points at, not text for a block
+    if (words.length && words[words.length - 1].toLowerCase() === 'ref') {
+      p.refTo = splitTop(p.value, ',').map(x => x.trim()).filter(Boolean);
+      delete p.value;
+      return { p, used, words, eq, bad: null };
+    }
+    // The value belongs to the word right before = (Josue, 11/25): PROC = cool down, never PROC BLUE = cool down,
+    // where it would read as BLUE's value. Only a shape or a part takes one. It is still shown, with an error.
+    const last = words[words.length - 1];
+    if (last && !shapeOf(last) && !OLD_RECT(last)) {
+      const sw = words.find(x => shapeOf(x));
+      bad = { kind: 'value', entry, last, fix: sw ? [...words.filter(x => x !== sw), sw].join(' ') + ' = ' + entry.slice(eq + 1).trim() : null };
+    }
+  }
+  return { p, used, words, eq, bad };
+}
+function readSpecifier(specifier, n) {
+  const props = Array.from({ length: n }, () => ({}));
+  const cmds = [], issues = [];
+  for (const group of splitTop(specifier, ';')) {
+    let k = 0, inCmds = false;
+    const over = [];
+    for (const raw of splitTop(group, ',')) {
+      const entry = raw.trim();
+      if (inCmds) { cmds.push(entry); continue; }
+      if (!entry) { k++; continue; } // an empty entry skips that element, like NULL
+      let p;
+      if (/^\[[\s\S]*\]$/.test(entry)) {
+        // a bracketed entry: every specifier in it is for this one element
+        p = {};
+        for (const sub of splitTop(entry.slice(1, -1), ',').map(x => x.trim()).filter(Boolean)) {
+          const r = readEntry(sub);
+          if (r.bad) issues.push(r.bad);
+          if (r.used < r.words.length) issues.push({ kind: 'unknown', entry, word: r.words[r.used] });
+          // one element has one shape and one color; a second would silently win, so it is refused
+          for (const key of ['shape', 'color']) if (r.p[key] && p[key]) issues.push({ kind: 'twice', entry, key });
+          Object.assign(p, r.p);
+        }
+      } else {
+        const r = readEntry(entry);
+        if (r.used < r.words.length) { // behavior words: the rest of the entry and of the group
+          cmds.push(r.words.slice(r.used).join(' ') + (r.eq < 0 ? '' : ' ' + entry.slice(r.eq)));
+          inCmds = true;
+          continue;
+        }
+        if (r.bad) issues.push(r.bad);
+        p = r.p;
+      }
+      if (k < n) Object.assign(props[k], p); else if (!p.skip) over.push(entry);
+      k++;
+    }
+    // Entries and elements pair up one to one inside a group (Josue, 11/25). A group that only holds a command has no
+    // entries (k is 0) and is left alone; otherwise more entries than elements, or fewer, is reported by the caller.
+    if (k > 0 && (over.length || k < n)) issues.push({ group: group.trim(), slots: k, over });
+  }
+  return { props, rest: cmds.join(' '), issues };
+}
+const unbracket = v => /^\[[\s\S]*\]$/.test(v) ? v.slice(1, -1).trim() : v;
+
+// Click on a block: the shape that comes next. Start and end blocks also get a step back to their default look.
+// An EE part steps through the EE parts instead, so a click never turns a circuit into boxes.
+function nextShape(n) {
+  // GND is a connection, not a part with a value, so the click cycle leaves it out
+  if (EE[n.shape]) { const ee = Object.keys(EE).filter(k => k !== 'GND'); return ee[(ee.indexOf(n.shape) + 1) % ee.length]; }
+  // auto is the plain box for a middle block; a start or end block reaches a box through proc, with no rect word
+  const seq = n.role ? ['auto', 'tri', 'circ', 'dia', 'io', 'proc'] : ['auto', 'tri', 'circ', 'dia', 'io'];
+  const at = seq.indexOf(n.shape || 'auto');
+  return seq[(at + 1) % seq.length]; // proc and dec are not in the cycle, so a click on one goes to the first shape
+}
+
+// Write one element's shape into its script line, keeping its color and value. The edit goes into the first
+// group that holds element entries; earlier elements without an entry get a filler (defaults[i]: "auto" for
+// every block, the default look) so the entries stay in element order. With no such group, a new one is
+// written first in the v4 form (shapes, then the rest) or, if the line already uses groups, as its own group.
+function setShape(text, ln, idx, shape, defaults) {
+  const lines = text.split('\n');
+  const m = (lines[ln - 1] || '').match(/^(\s*\*\s*([^\\]*?)\s*\\)\s*(.*)$/);
+  if (!m) return text;
+  const groups = splitTop(m[3], ';');
+  const isProp = e => { const r = readSpecifier(e, 1); return !r.rest.trim() && Object.keys(r.props[0]).some(k => k !== 'end' && k !== 'skip'); }; // an END or NULL group is not where a clicked shape goes
+  const fill = i => (defaults && defaults[i]) || 'auto';
+  let gi = groups.findIndex(g => isProp(splitTop(g, ',')[0].trim()));
+  let entries, tail;
+  if (gi < 0) {
+    entries = []; tail = [];
+    if (groups.length === 1) { const r = groups[0].trim(); tail = r ? [r] : []; groups[0] = ''; }
+    else groups.unshift('');
+    gi = 0;
+  } else {
+    const all = splitTop(groups[gi], ',').map(s => s.trim());
+    const cut = all.findIndex(e => e && !isProp(e));
+    entries = cut < 0 ? all : all.slice(0, cut);
+    tail = cut < 0 ? [] : all.slice(cut);
+  }
+  // fillers go before the element only; its own entry starts empty, so the new word is never stacked on a filler
+  while (entries.length < idx) entries.push(fill(entries.length));
+  if (entries.length === idx) entries.push('');
+  // swap the entry's shape word, or put one in front of its color and value
+  const e = entries[idx];
+  const eq = e.indexOf('=');
+  const head = (eq < 0 ? e : e.slice(0, eq)).trim().split(/\s+/).filter(Boolean);
+  const si = head.findIndex(w => shapeOf(w));
+  // a word written out in capitals is replaced in capitals, so a click keeps the line's style
+  const caps = si >= 0 && head[si].length > 1 && head[si] === head[si].toUpperCase();
+  // a part is always written as its word (R as RES), as the typing aid would write it
+  const word = CODE_WORDS[shape] || (caps ? shape.toUpperCase() : shape);
+  if (si >= 0) head[si] = word; else head.unshift(word);
+  entries[idx] = head.join(' ') + (eq < 0 ? '' : ' ' + e.slice(eq).trim());
+  // trailing "auto" entries say nothing, so they are dropped as in v4
+  while (entries.length && entries[entries.length - 1].toLowerCase() === 'auto') entries.pop();
+  groups[gi] = [...entries, ...tail].join(', ');
+  const specifier = groups.map(g => g.trim()).filter(Boolean).join('; ');
+  lines[ln - 1] = m[1] + (specifier ? ' ' + specifier : '');
+  return lines.join('\n');
+}
+
+// Command shorthand. Tentative: the letters may change, so they live in this one table. "r2" is "return2".
+// "e" no longer means end (Josue, 11/24): end is spelled out so e stays free for powers in engineering values.
+const SHORT = { s: 'series', b: 'branch', w: 'wait', r: 'return' };
+// The letters are matched exactly as typed (V5b: single letters are case-sensitive), so R stays a resistor
+// and never reads as return; this runs before the words are lowered.
+function expandShorthand(c) {
+  return c.replace(/(^|[^\w^])(r\^?\d+|[rbws])(?![\w^])/g, (m, pre, t) =>
+    pre + (t.length > 1 ? 'return^' + t.replace(/\D/g, '') : SHORT[t]));
+}
+
+// Typing aid (Josue, 11/24): a small shorthand letter in the specifier is rewritten as its full word in capitals
+// the moment a space, comma or semicolon follows it (s becomes SERIES), so the specifier reads as words. Enter and
+// the hotkey that starts the next list rewrite it too, so the last letter of a line is not left behind. Part codes
+// are written out the same way (R becomes RES, VS becomes VOLT_SRC; Josue, 11/24), and m becomes MEAS.
+// The word for each letter comes from the tables, so it cannot drift from what the parser accepts.
+// e is the letter for END here only in what is typed (Josue, 11/25); the parser still needs the full word, and a value
+// such as 1e3 is never touched because the aid skips values.
+const LETTER_WORDS = { m: 'MEAS', e: 'END' };
+for (const [k, v] of Object.entries(SHORT)) LETTER_WORDS[k] = v.toUpperCase();
+for (const [k, v] of Object.entries(SHAPE_WORDS)) {
+  if (k.length === 1 && k === k.toLowerCase()) LETTER_WORDS[k] = Object.keys(SHAPE_WORDS).find(w => w.length > 1 && SHAPE_WORDS[w] === v).toUpperCase();
+}
+// The location words are capitals whether they were typed as a letter or in full (Josue, 11/25): branch becomes
+// BRANCH the same way b does. END has no letter, so it only gets this.
+const CMD_WORDS = ['series', 'branch', 'return', 'wait', 'end'];
+// Colors get the same capitals but no letter (Josue, 11/25: they are spelled out), since b, r and the others already
+// mean BRANCH and RETURN.
+const COLOR_WORDS = Object.keys(COLORS).map(c => c.toUpperCase());
+// Every other specifier word too (Josue, 11/25): the shapes (PROC, DEC, IO, TRI, CIRC, DIA, AUTO and their long
+// forms), the part words, MEAS, REV and the AC forms. They are only rewritten as capitals; the parser reads any case.
+// The words that expect a value after = (Josue, 11/25): PROC, DEC and IO show one in the block, and every part but
+// the diode and GND needs a number. Enter after one of them types " = " instead of moving on.
+const VALUE_SHAPES = new Set(['proc', 'dec', 'io', 'ref', 'R', 'C', 'L', 'D', 'VS', 'IS', 'DVS', 'DIS', 'VAC', 'IAC']);
+const takesValue = w => VALUE_SHAPES.has(shapeOf(w)) || w.toLowerCase() === 'ref';
+const OTHER_WORDS = ['null', 'ref', 'meas', 'rev', 'pole', 'polar', 'rect', 'rectangular', 'sine', 'sinusoidal', 'voltage', 'current'];
+const SPEC_WORDS = new Set([...Object.keys(SHAPE_WORDS).filter(k => k.length > 1), ...OTHER_WORDS, ...Object.values(CODE_WORDS).map(w => w.toLowerCase())]);
+const EXPANDED = new RegExp('(?:' + [...new Set([...Object.values(LETTER_WORDS), ...Object.values(CODE_WORDS), 'END', ...COLOR_WORDS, ...[...SPEC_WORDS].map(w => w.toUpperCase())])].join('|') + '|RETURN\\^\\d+)');
+// Every multi-letter specifier word, for the as-you-type capitals and the autofill (Josue, 11/25).
+const ALL_WORDS = [...new Set([...Object.values(LETTER_WORDS), ...Object.values(CODE_WORDS), ...CMD_WORDS.map(w => w.toUpperCase()),
+  ...COLOR_WORDS, ...[...SPEC_WORDS].map(w => w.toUpperCase()), 'RETURN'])].filter(w => w.length > 1);
+// Two words that mean the same thing (PROC and PROCESS) are not ambiguous, so a prefix of only those still autofills.
+const meaning = w => SHAPE_WORDS[w.toLowerCase()] || (COLORS[w.toLowerCase()] ? w : 0) || w;
+// The word a prefix of two or more letters completes to, or null when it is already whole or fits several words.
+function completeWord(tok) {
+  const up = tok.toUpperCase();
+  if (up.length < 2 || ALL_WORDS.includes(up)) return null;
+  const hits = ALL_WORDS.filter(w => w.startsWith(up));
+  if (!hits.length) return null;
+  return hits.every(w => meaning(w) === meaning(hits[0])) ? hits.reduce((a, b) => a.length <= b.length ? a : b) : null;
+}
+// The word a typed token is written out as: a small letter, r2, or a part code (a one-letter code exactly as typed,
+// a longer one in any case, like everywhere else). A prefix with only one possible word is completed (autofill).
+function wordFor(tok) {
+  if (/^(?:return|r)\^?\d+$/.test(tok)) return 'RETURN^' + tok.replace(/\D/g, '');
+  if (CMD_WORDS.includes(tok.toLowerCase()) || (tok.length > 1 && (COLORS[tok.toLowerCase()] || SPEC_WORDS.has(tok.toLowerCase())))) return tok.toUpperCase();
+  if (tok.length === 1) return LETTER_WORDS[tok] || CODE_WORDS[tok];
+  return CODE_WORDS[tok.toUpperCase()] || completeWord(tok);
+}
+
+// While a specifier word is still being typed (Josue, 11/25), the letters so far are shown in capitals as soon as they
+// can only become a specifier word, so "pr" reads PR before it completes. A single letter waits: C and c mean different
+// things. Returns the new text (same length, so the caret stays), or null when nothing changes.
+function capsAtCaret(text, caret) {
+  const ls = text.lastIndexOf('\n', caret - 1) + 1;
+  const before = text.slice(ls, caret);
+  const m = before.match(/(^|[\s,;[])([A-Za-z_]{2,13})$/);
+  if (!m) return null;
+  const tok = m[2], up = tok.toUpperCase();
+  if (tok === up || !ALL_WORDS.some(w => w.startsWith(up))) return null;
+  const from = ls + before.length - tok.length;
+  if (!inSpecifier(text.slice(ls, from))) return null;
+  return text.slice(0, from) + up + text.slice(caret);
+}
+
+// True when the text before a spot on a line is in the specifier and not inside a value, where a letter is a
+// shorthand and not part of an element name or of free text such as "proc = b".
+function inSpecifier(linePrefix) {
+  const m = linePrefix.match(/^\s*\*[^\\]*\\/);
+  if (!m) return false;
+  // A bracket opened after = is a value; one opened at the start of an entry holds that element's specifiers
+  // (Josue, 11/25), and inside it the words are written out like anywhere else in the specifier.
+  const stack = []; let inVal = false;
+  for (const ch of linePrefix.slice(m[0].length)) {
+    if (stack.includes('value')) { if (ch === '[') stack.push('value'); else if (ch === ']') stack.pop(); continue; }
+    if (ch === '[') { stack.push(inVal ? 'value' : 'entry'); continue; }
+    if (ch === ']' && stack.length) { stack.pop(); inVal = false; continue; }
+    if (ch === '=') inVal = true; else if (ch === ',' || ch === ';') inVal = false;
+  }
+  return !stack.includes('value') && !inVal;
+}
+
+// Called after a character is typed at caret - 1. Returns the new text and caret, or null when nothing changes.
+// undoable says the trigger was a space, comma or semicolon, so an immediate Backspace may take the word back.
+function expandAtCaret(text, caret, listLine) {
+  const trig = text[caret - 1];
+  if (!trig || !' ,;*\n'.includes(trig)) return null;
+  const ls = text.lastIndexOf('\n', caret - 2) + 1;
+  const before = text.slice(ls, caret - 1);
+  // A space after a name in an element list types ", " (Josue, 11/25), so names are listed without typing commas.
+  // Not on the name line, whose name may hold spaces; listLine says which line this is when the text is only the
+  // current line (the bottom box), otherwise it is any line after the first one written.
+  const isList = listLine === undefined ? !startsDesign(text.split('\n'), text.slice(0, ls).split('\n').length) : listLine;
+  if (trig === ' ' && isList && /^\s*\*[^\\]*[\w^)\]]$/.test(before))
+    return { text: text.slice(0, caret - 1) + ', ' + text.slice(caret), caret: caret + 1, undoable: false };
+  const m = before.match(/(^|[\s,;[])((?:return|r)\^?\d+|[A-Za-z_]{1,13})$/); // [ too: a word may open an element bracket
+  if (!m) return null;
+  const tok = m[2], word = wordFor(tok);
+  if (!word || word === tok) return null;
+  const from = ls + before.length - tok.length;
+  if (!inSpecifier(text.slice(ls, from))) return null;
+  return { text: text.slice(0, from) + word + text.slice(caret - 1), caret: caret + word.length - tok.length, undoable: ' ,;'.includes(trig) };
+}
+
+// Backspace on a written-out word removes the whole word, not one letter. just is true when the previous keystroke
+// wrote the word out: then the space or comma that triggered it goes too, which undoes exactly what was typed.
+// Only the capital words the rewrite produces count, so a word typed in lower case still deletes letter by letter.
+function backspaceWord(text, caret, just) {
+  const ls = text.lastIndexOf('\n', caret - 1) + 1;
+  const before = text.slice(ls, caret);
+  const m = (just && before.match(new RegExp('(^|[\\s,;[])(' + EXPANDED.source + ')[ ,;]$')))
+    || before.match(new RegExp('(^|[\\s,;[])(' + EXPANDED.source + ')$'));
+  if (!m) return null;
+  const from = caret - (m[0].length - m[1].length);
+  if (!inSpecifier(text.slice(ls, from))) return null;
+  return { from, to: caret };
+}
+
+function readCommands(specifier) {
+  const c = expandShorthand(specifier).toLowerCase();
+  const r = c.match(/\breturn\s*(?:\^\s*)?(\d+)?/);
+  return {
+    branch: /\bbranch\b/.test(c), wait: /\bwait\b/.test(c),
+    ret: !!r, retN: r && r[1] ? +r[1] : 1, // checked against the floor and ceiling where the depth is known
+    end: /\bend\b/.test(c),
+  };
+}
+
+// partial=true is for text still being typed: an unclosed "*A, B" line is read as an element list
+// with no command yet, so the preview and the highlight work before the closing backslash exists.
+function parseV2(lines, partial, errors, warnings) {
+  const LINE = /^\s*\*\s*([^\\]*?)\s*\\\s*(.*)$/;
+  const OPEN = /^\s*\*\s*([^\\]*?)\s*$/;
+  let lastIdx = -1;
+  lines.forEach((l, i) => { if (l.trim()) lastIdx = i; });
+
+  const nodes = [], edges = [];
+  const addNode = o => { o.id = nodes.length; nodes.push(o); return o; };
+  const link = (a, b) => edges.push([a.id, b.id]);
+  const junction = lane => addNode({ type: 'junction', lane, w: 10 });
+
+  const main = { lane: 0, cursor: null, order: 0, lines: [], state: 'main' };
+  // waiting[k] is the path at level k: the main path, then each branch that is still open.
+  const waiting = [main];
+  const all = [], pending = [], levels = new Map(), info = new Map(), badEnds = [];
+  let laneCount = 1, orderCount = 1, first = true, title = 'Schematic', started = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    if (!raw.trim()) continue;
+    let body, specifier, m = raw.match(LINE);
+    if (m) { body = m[1]; specifier = m[2]; }
+    else if (partial && i === lastIdx && (m = raw.match(OPEN))) {
+      if (m[1] === '') continue; // only the opening asterisk so far
+      body = m[1]; specifier = '';
+    } else { errors.push(`Line ${i + 1}: expected the form *elements\\ specifier`); continue; }
+
+    const ln = i + 1;
+    if (!started) {
+      // The schematic must be named before anything else, so the first line may only be a name. Anything else
+      // there (elements, an empty name, commands) is an error and nothing is drawn until it is fixed.
+      const why = body === '' ? 'the name is empty' : body.includes(',') ? 'it lists several elements' : specifier.trim() ? 'it has commands after the name' : '';
+      if (why) {
+        errors.push(`Line ${ln}: name the schematic first (${why}). The first line is only its name, like *Schematic\\ , then add lines such as *A, B\\ below it.`);
+        break;
+      }
+      title = body; started = true; continue;
+    }
+    if (body === '') break; // closing *\
+    const els = body.split(',').map(s => s.trim()).filter(Boolean);
+    if (!els.length) { errors.push(`Line ${ln}: no elements`); continue; }
+    const sp = readSpecifier(specifier, els.length); // element properties, then the location commands
+    for (const g of sp.issues) {
+      if (g.kind === 'twice') { errors.push(`Line ${ln}: ${g.entry} gives one element two ${g.key}s. Keep one.`); continue; }
+      if (g.kind === 'unknown') {
+        errors.push(`Line ${ln}: "${g.word}" in ${g.entry} is not a specifier for one element. Brackets hold shapes, colors, values, REV, MEAS, END and NULL; commands such as BRANCH go in their own group.`);
+        continue;
+      }
+      if (g.kind === 'value') {
+        errors.push(`Line ${ln}: in "${g.entry}" the value follows ${g.last}, but only a shape or a part takes a value. ` + (g.fix ? `Write it right after the shape: ${g.fix}.` : 'Add one before =, like PROC = ...'));
+        continue;
+      }
+      if (g.over.length) errors.push(`Line ${ln}: ${g.slots} ${g.slots === 1 ? 'entry' : 'entries'} for ${els.length} element${els.length === 1 ? '' : 's'} in "${g.group}": nothing to apply ${g.over.map(o => '"' + o + '"').join(', ')} to. Remove ${g.over.length === 1 ? 'it' : 'them'} or add an element.`);
+      else warnings.push(`Line ${ln}: ${g.slots} ${g.slots === 1 ? 'entry' : 'entries'} for ${els.length} elements in "${g.group}": ${els.slice(g.slots).join(', ')} get${els.length - g.slots === 1 ? 's' : ''} none. End the group with a bare comma for each element you skip on purpose.`);
+    }
+    const cmd = readCommands(sp.rest);
+
+    const top = waiting[waiting.length - 1];
+    let f = top;
+    levels.set(ln, cmd.branch ? waiting.length : waiting.length - 1);
+    if (cmd.branch) {
+      if (!top.cursor) { errors.push(`Line ${ln}: branch before any element`); continue; }
+      const j = junction(top.lane);
+      // A branch leaving straight from a decision is its "no" path; the path that carries on is "yes".
+      if (top.cursor.shape === 'dec') j.decision = true;
+      link(top.cursor, j);
+      top.cursor = j;
+      f = { lane: laneCount++, cursor: j, order: orderCount++, lines: [], state: 'open' };
+      all.push(f);
+    }
+    f.lines.push(ln);
+
+    let lastEl = null;
+    for (const [i, label] of els.entries()) {
+      const p = sp.props[i];
+      const shape = p.shape && p.shape !== 'auto' ? p.shape : undefined;
+      // A value is what the block shows; the name then sits small above it. Width follows whichever is inside.
+      const ee = !!EE[shape];
+      // An EE part's value is read in its unit (4.7k on a resistor shows 4.7 kΩ); a block's value is free text.
+      const value = ee ? eeValue(shape, p.value) : p.value;
+      const shown = value ? value : label.replace('_', '');
+      // An EE part sits on the wire with its texts above and below, so it is only as wide as the symbol or the
+      // longer text; the leads stretch to fill the rest.
+      const w = ee ? Math.max(64, 10 + Math.max(value ? value.length * 8 : 0, SHOW_EE_NAME ? label.length * 7.5 : 0))
+        : Math.max(56, 16 + shown.length * (value ? 8.5 : 10)) * (SHAPE_WIDTH[shape] || 1);
+      // ln and idx say which script line and which element of it this block is, so a click can edit that line
+      // REV only means something on a part with a direction; elsewhere it is ignored with a warning, not an error,
+      // because a click that steps a source into a resistor should not break the drawing.
+      if (p.rev && !DIRECTIONAL.has(shape)) warnings.push(`Line ${ln}: REV only reverses ${[...DIRECTIONAL].join(', ')}; ignored on ${label}`);
+      // MEAS is refused on a source's own quantity (an error: it can only read the value back) and ignored on a
+      // flow block (a warning: there is nothing electrical to measure there).
+      if (p.oldRect) warnings.push(`Line ${ln}: ${p.oldRect} is no longer a shape (a plain box is the default, and RECT now means the rectangular form after MEAS); ignored on ${label}`);
+      if (p.noValue) warnings.push(`Line ${ln}: ${p.noValue} on ${label} has = but nothing after it. Type its value.`);
+      let meas = p.meas;
+      if (meas && !ee) { warnings.push(`Line ${ln}: MEAS only measures circuit parts; ignored on ${label}`); meas = undefined; }
+      // GND is a connection with no two ends to read across, and its marker would sit on top of the ground sign
+      else if (meas && shape === 'GND') { warnings.push(`Line ${ln}: GND has nothing to measure; MEAS ignored on ${label}. Put MEAS on a part next to it.`); meas = undefined; }
+      else if (meas && OWN_QTY[shape] === meas) {
+        errors.push(`Line ${ln}: ${label} is a ${meas === 'V' ? 'voltage' : 'current'} source, so MEAS ${meas} would only read back its own value. Measure ${meas === 'V' ? 'I' : 'V'} instead.`);
+        meas = undefined;
+      }
+      const n = addNode({ type: 'el', label, lane: f.lane, shape, ln, idx: i, value, color: p.color, refMark: p.refMark, refTo: p.refTo,
+        rev: !!(p.rev && DIRECTIONAL.has(shape)), meas, measForm: p.measForm, raw: p.value, w: Math.round(w) });
+      if (first) { n.role = 'start'; first = false; }
+      // END on the last element of the line is the line's end, with its checks below; on an earlier element it
+      // marks that element, and the end rule then refuses it because the path goes on
+      if (p.end) { if (i === els.length - 1) cmd.end = true; else n.role = 'end'; }
+      if (f.cursor) link(f.cursor, n);
+      f.cursor = n; lastEl = n;
+    }
+    // An end is refused while any branch still waits on its return: that branch could never rejoin. The
+    // check runs after this line's own commands, so a return that closes the last waiting branch may end.
+    const endHere = cmd.end;
+
+    // A line on a path claims the oldest pending return aimed at that path, so no "meet" keyword is needed.
+    const cand = pending.filter(p => !p.done && p.target === f).sort((a, b) => a.order - b.order)[0];
+    if (cand) {
+      const j = junction(f.lane);
+      link(f.cursor, j); f.cursor = j;
+      link(cand.last, j); cand.done = true;
+    }
+
+    let closedLane = null;
+    // RETURN^N climbs N levels (Josue, 11/25): the floor is 1, and the ceiling is how far this path is from the main
+    // path, since there is nothing above it. A number outside that is an error; it is drawn at the nearest limit.
+    const depth = cmd.branch ? waiting.length : waiting.length - 1;
+    if (cmd.ret && depth > 0 && (cmd.retN < 1 || cmd.retN > depth)) {
+      errors.push(cmd.retN < 1
+        ? `Line ${ln}: RETURN^${cmd.retN} is below the floor; the least is RETURN^1 (plain RETURN), one level up.`
+        : `Line ${ln}: RETURN^${cmd.retN} goes past the main path: this path is ${depth} level${depth === 1 ? '' : 's'} from it, so the most is RETURN^${depth}.`);
+      cmd.retN = Math.min(depth, Math.max(1, cmd.retN));
+    }
+    if (cmd.branch) {
+      if (cmd.ret) { // closed branch: "wait" on the same line adds nothing, the return is pending anyway
+        const target = waiting[Math.max(0, waiting.length - cmd.retN)];
+        f.pend = { last: f.cursor, target, order: f.order, done: false, ln };
+        pending.push(f.pend);
+        f.state = 'pending'; closedLane = f.lane;
+      } else if (cmd.wait) { waiting.push(f); f.state = 'waiting'; }
+      else f.state = 'ended'; // plain branch terminates at its last element
+    } else if (cmd.ret) {
+      const idx = waiting.length - 1;
+      if (idx === 0) warnings.push(`Line ${ln}: return on the main path ignored`);
+      else {
+        const target = waiting[Math.max(0, idx - cmd.retN)];
+        f.pend = { last: f.cursor, target, order: f.order, done: false, ln };
+        pending.push(f.pend);
+        f.state = 'pending'; closedLane = f.lane;
+        waiting.pop();
+      }
+    }
+    if (endHere) {
+      const open = waiting.slice(1);
+      if (open.length) {
+        const which = open.map(b => `line ${b.lines[0]}`).join(', ');
+        errors.push(`Line ${ln}: end is not allowed while ${open.length === 1 ? 'a branch is' : open.length + ' branches are'} waiting on a return (${which}). Write the return first.`);
+        lastEl.badEnd = true; badEnds.push(ln);
+      } else lastEl.role = 'end';
+    }
+    info.set(ln, { lane: f.lane, before: top.lane, isBranch: cmd.branch, ret: cmd.ret, closedLane });
+  }
+
+  // Returns that found no line on their target path merge at the end of that path.
+  const endJ = new Map();
+  for (const p of pending.filter(p => !p.done)) {
+    warnings.push(`Line ${p.ln}: return has no line on its target path to rejoin; merged at the end of that path`);
+    let j = endJ.get(p.target);
+    if (!j) {
+      j = junction(p.target.lane);
+      if (p.target.cursor) link(p.target.cursor, j);
+      endJ.set(p.target, j);
+    }
+    link(p.last, j);
+  }
+
+  // An end block must be the last thing on its path (Josue, 11/24): it may close a branch that terminates,
+  // but if anything is wired after it (more elements, a rejoin, a return) it is in the middle of a path.
+  const out = new Set(edges.map(([a]) => a));
+  for (const n of nodes) {
+    if (n.role !== 'end' || !out.has(n.id)) continue;
+    errors.push(`Line ${n.ln}: ${n.label} is marked end, but the path continues after it. An end must be the last element of its path.`);
+    n.badEnd = true; delete n.role;
+    if (!badEnds.includes(n.ln)) badEnds.push(n.ln);
+  }
+
+  // A decision needs two ways out, yes and no (Josue, 11/25). The no path is a branch, which leaves through the
+  // junction placed right after the block, so the outputs are counted through that junction.
+  const outs = new Map();
+  for (const [a, b] of edges) (outs.get(a) || outs.set(a, []).get(a)).push(b);
+  for (const n of nodes) {
+    if (n.type !== 'el' || n.shape !== 'dec') continue;
+    const next = outs.get(n.id) || [];
+    const ways = next.reduce((k, b) => k + (nodes[b].type === 'junction' && nodes[b].decision ? (outs.get(b) || []).length : 1), 0);
+    if (ways >= 2) continue;
+    errors.push(`Line ${n.ln}: ${n.label} is a decision, so it needs two paths out of it, yes and no; it has ${ways === 0 ? 'none' : 'one'}. ${ways === 0 ? 'Continue the path after it and add a BRANCH for the no path.' : 'Add a BRANCH right after it for the no path.'}`);
+    n.badEnd = true;
+  }
+
+  const branches = all.map(b => ({
+    lane: b.lane, lines: b.lines, order: b.order, target: b.pend ? b.pend.target.lane : null,
+    state: waiting.includes(b) ? 'waiting' : (b.pend && !b.pend.done ? 'pending' : (b.pend ? 'joined' : b.state)),
+  }));
+  // A diagram with a circuit part is a circuit. V7 (Josue, 11/25): nothing is grounded unless GND is written, so
+  // there is no implied return wire any more; a circuit that needs ground says where.
+  const circuit = nodes.some(n => n.type === 'el' && EE[n.shape]);
+  const firstEl = nodes.find(n => n.type === 'el');
+  // A simulation needs every path to stop somewhere (Josue, 11/26): a branch of a flow diagram that does not return
+  // has to finish with END, or a run along it would have nowhere to stop. Circuits are left out, since their loose
+  // ends are the open-end warnings. A branch on the line still being typed is given time to get its END.
+  if (!circuit) for (const b of all) {
+    if (b.state !== 'ended') continue;
+    const c = b.cursor, at = b.lines[b.lines.length - 1];
+    if (partial && at === lastIdx + 1) continue;
+    if (c && c.type === 'el' && c.role === 'end') continue;
+    errors.push(`Line ${at}: this branch does not return, so it needs an END (a run along it must stop somewhere). Write END on its last element${c && c.type === 'el' ? `, ${c.label}` : ''}, or RETURN to rejoin.`);
+    if (c && c.type === 'el') c.badEnd = true;
+  }
+  const lastMain = endJ.get(main) || main.cursor;
+  const model = {
+    mode: 'v2', title, nodes, edges, lanes: laneCount, errors, warnings,
+    levels, info, branches, waitingLanes: waiting.map(w => w.lane), badEnds,
+    circuit, mainStart: firstEl ? firstEl.id : null, mainEnd: lastMain ? lastMain.id : null,
+  };
+  // The checks run for a circuit that is meant to be electrical (it has a GND or a MEAS); a plain drawing of parts
+  // stays quiet. Solving needs a MEAS, and is skipped when a check found an error, since the numbers would mislead.
+  const wantsMeas = nodes.some(n => n.meas);
+  if (circuit && (wantsMeas || nodes.some(n => n.shape === 'GND'))) {
+    const bad = checkCircuit(model);
+    if (wantsMeas && !bad) model.sim = simulate(model);
+  }
+  return model;
+}
+
+// ---- Circuit solver (V6) ----------------------------------------------------------------------------------------
+// Modified nodal analysis, the method circuit simulators use: one unknown per node voltage and one per current
+// through a voltage-like part (VOLT_SRC, DEP_VOLT_SRC, AC_VOLT_SRC and IND). A DIODE is the Shockley diode, solved by
+// Newton steps. Every node gets a tiny conductance to ground (GMIN, as SPICE does) so a dangling open branch still
+// solves instead of making the matrix singular.
+// AC (Josue, 11/24): each AC source carries its own omega, so the circuit is solved once per omega with only the
+// sources at that omega switched on (the rest are zero: a voltage source a short, a current source open), plus
+// once for DC, and the readings add by superposition. A solve at omega is in phasors: CAP is jωC, IND is jωL, which
+// at omega 0 is exactly DC (CAP open, IND a short). The complex system is solved as a real one twice the size.
+// Directions follow the drawing: current flows left to right through a part unless it is marked REV. A source's
+// value is − to + along that direction. MEAS V reads + where the current enters, MEAS I reads along the arrow.
+// A dependent source's value is gain * V(name) or gain * I(name) of another part, for example [2*V(R1)].
+const GMIN = 1e-12;
+// The diode (Josue, 11/25) is the textbook constant-drop model: DIODE = [FWD_VOLT, REV_VOLT]. On, it holds exactly
+// FWD_VOLT (0.7 V unless given) from anode to cathode at any current; off, it is open; past REV_VOLT backwards it
+// breaks down and holds that voltage the other way (a Zener). With no REV_VOLT it never breaks down, since a real
+// part's breakdown ranges from about 5 V to 1000 V and any default would be a guess. A held voltage is stamped as a
+// very large conductance, so the error is about a nanovolt per milliamp.
+const DIODE_FWD = 0.7, DIODE_G = 1e6;
+// FWD_VOLT and REV_VOLT from a diode's value: one number is FWD_VOLT, [fwd, rev] both, and an empty place keeps the
+// default ([, 5.1]). null when a place holds something that is not a voltage.
+function readDiode(raw) {
+  if (raw == null || !String(raw).trim()) return { fwd: DIODE_FWD, rev: null };
+  const parts = splitTop(String(raw), ',').map(x => x.trim());
+  if (parts.length > 2) return null;
+  const num = t => t === '' ? undefined : eeNumber('VS', t);
+  const fwd = num(parts[0]), rev = num(parts[1] === undefined ? '' : parts[1]);
+  if (fwd !== undefined && !(fwd >= 0)) return null;
+  if (rev !== undefined && !(rev > 0)) return null;
+  return { fwd: fwd === undefined ? DIODE_FWD : fwd, rev: rev === undefined ? null : rev };
+}
+// Readings below this are the method, not the circuit: GMIN leaks about 1e-12 times the voltage, so a few pA flow
+// through an open capacitor. They show as 0.
+const READ_FLOOR = 1e-10;
+// Points that are wired together become one node; ground is the point G, which every GND element is. The parts keep
+// their two node numbers (a is the left end, b the right; -1 is ground), shared by the checks and the solver.
+function circuitGraph(model) {
+  const { nodes, edges } = model;
+  const els = nodes.filter(n => n.type === 'el');
+  const parent = new Map();
+  const find = a => { while (parent.has(a) && parent.get(a) !== a) a = parent.get(a); return a; };
+  const union = (a, b) => { a = find(a); b = find(b); if (a !== b) parent.set(a, b); };
+  const inPt = n => n.type === 'junction' ? 'J' + n.id : n.shape === 'GND' ? 'G' : 'L' + n.id;
+  const outPt = n => n.type === 'junction' ? 'J' + n.id : n.shape === 'GND' ? 'G' : 'R' + n.id;
+  for (const [a, b] of edges) union(outPt(nodes[a]), inPt(nodes[b]));
+  // One GND is enough (Josue, 11/25): it joins both sides of the circuit, so the start of the main path and its last
+  // point are both ground. Two or more GND are written out explicitly and tie nothing extra.
+  const grounds = els.filter(n => n.shape === 'GND');
+  const tied = [];
+  // It only does so from an end of the path: a GND in the middle would put the parts on either side of it between
+  // ground and ground, shorting them, so there it is just the reference point.
+  if (grounds.length === 1 && model.mainStart != null && model.mainEnd != null) {
+    const a = nodes[model.mainStart], b = nodes[model.mainEnd];
+    if (a.shape === 'GND' && b.shape !== 'GND') { union(outPt(b), 'G'); tied.push('end'); }
+    else if (b.shape === 'GND' && a.shape !== 'GND') { union(inPt(a), 'G'); tied.push('start'); }
+  }
+  model.tied = tied;
+  const idx = new Map();
+  const node = p => { const r = find(p); if (r === find('G')) return -1; if (!idx.has(r)) idx.set(r, idx.size); return idx.get(r); };
+  const parts = els.filter(n => n.shape !== 'GND').map(n => ({ n, a: node(inPt(n)), b: node(outPt(n)) }));
+  return { parts, N: idx.size, byName: new Map(parts.map(p => [p.n.label, p])), grounds };
+}
+
+// ---- Circuit checks (V7) ----------------------------------------------------------------------------------------
+// Josue, 11/25: say what is wrong in words, with the line, instead of the solver's one generic failure or a quiet 0.
+// Errors stop the solve and mark the parts with the red X the end rule uses (badEnd, kept off the badEnds list so the
+// script highlight stays on end words); warnings still solve. Returns true when there was an error.
+function checkCircuit(model) {
+  const { nodes, errors, warnings } = model;
+  // a mixed diagram is a drawing; simulate() names the flow block
+  if (nodes.some(n => n.type === 'el' && !EE[n.shape])) return false;
+  const { parts, N, grounds } = circuitGraph(model);
+  const names = ps => ps.map(p => p.n.label).join(', ');
+  let bad = false;
+  const err = (ps, msg) => { bad = true; ps.forEach(p => { p.n.badEnd = true; }); errors.push(`Line ${ps[0].n.ln}: ${msg}`); };
+  const warn = (ln, msg) => warnings.push(`Line ${ln}: ${msg}`);
+  const G = N; // ground gets a slot of its own so it can sit in the same graph as the nodes
+  const at = i => i < 0 ? G : i;
+
+  // duplicate names make MEAS and V(R1) ambiguous
+  const seen = new Map();
+  for (const p of parts) {
+    const first = seen.get(p.n.label);
+    if (first) err([p], `${p.n.label} is already used on line ${first.n.ln}. MEAS and V(R1) need one part per name.`);
+    else seen.set(p.n.label, p);
+  }
+  const meas = parts.filter(p => p.n.meas);
+  if (!grounds.length && meas.length) err(meas.slice(0, 1), 'no GND. Write GND where 0 V is, for example *GND, R1, GND\\ , RES = 1k. A circuit with MEAS needs one.');
+
+  // Which solves happen decides what an inductor is: a short in DC, an impedance in an AC-only circuit.
+  const hasAC = parts.some(p => AC_TWIN[p.n.shape]);
+  const dcSolve = !hasAC || parts.some(p => ['VS', 'IS', 'DVS', 'DIS'].includes(p.n.shape));
+  // a loop made only of ideal voltage sources and shorts has no answer: the sources would have to agree exactly
+  const vl = parts.filter(p => ['VS', 'DVS', 'VAC'].includes(p.n.shape) || (p.n.shape === 'L' && dcSolve));
+  const adj = new Map(), nb = k => adj.get(k) || adj.set(k, []).get(k);
+  for (const p of vl) {
+    const a = at(p.a), b = at(p.b);
+    // breadth-first search for a way from a to b through the voltage parts already seen
+    const prev = new Map([[a, null]]), q = [a];
+    while (q.length && !prev.has(b)) {
+      const u = q.shift();
+      for (const e of nb(u)) if (!prev.has(e.to)) { prev.set(e.to, { from: u, part: e.part }); q.push(e.to); }
+    }
+    if (prev.has(b)) {
+      const loop = [p];
+      for (let c = b; prev.get(c); c = prev.get(c).from) loop.push(prev.get(c).part);
+      // a loop of inductors alone is not a fight between sources
+      if (loop.some(x => x.n.shape !== 'L')) {
+        loop.sort((x, y) => x.n.id - y.n.id);
+        err(loop, loop.length === 1
+          ? `${p.n.label} has both ends on the same node, so it is a source shorted by a wire.`
+          : `${names(loop)} form a loop of only voltage sources and inductors, so their voltages cannot all hold. Add a resistor in the loop.`);
+      }
+    }
+    nb(a).push({ to: b, part: p }); nb(b).push({ to: a, part: p });
+  }
+
+  // a node that touches only current sources has nowhere for the current to go
+  const touch = new Map();
+  for (const p of parts) for (const i of [p.a, p.b]) if (i >= 0) (touch.get(i) || touch.set(i, []).get(i)).push(p);
+  const isI = p => ['IS', 'IAC', 'DIS'].includes(p.n.shape);
+  for (const ps of touch.values()) if (ps.every(isI)) err(ps, `${names(ps)} ${ps.length === 1 ? 'has' : 'have'} a node that touches only current sources, so no current can flow. Connect a resistor or another path.`);
+  // In DC a capacitor is open, so a current source that reaches a node only through capacitors pushes its current
+  // nowhere; the solver would answer with a huge voltage (found building the all-words example, 11/25).
+  // The DC current source must be the one stuck: an AC-only source sees the capacitor as an impedance.
+    else if (dcSolve && ps.some(p => p.n.shape === 'IS' || p.n.shape === 'DIS') && ps.every(p => isI(p) || p.n.shape === 'C'))
+      err(ps, `${names(ps)} meet at a node where a DC current source sees only capacitors, which are open in DC, so its current has nowhere to go. Add a resistor from that node to GND or another path.`);
+
+  // connected groups: one reaches ground or it does not
+  const up = new Map(), root = a => { while (up.has(a) && up.get(a) !== a) a = up.get(a); return a; };
+  for (const p of parts) { const x = root(at(p.a)), y = root(at(p.b)); if (x !== y) up.set(x, y); }
+  const gr = root(G);
+  // A part on a dead-end branch carries no current: peel off parts whose far end touches nothing else, over and over,
+  // and what is peeled is dead. Everything here is one connected drawing, so "no path to GND" in practice means "not on
+  // a closed path"; a group that really is cut off from ground is caught by the root test.
+  const deg = new Map([...touch].map(([k, v]) => [k, v.length])), dead = new Set();
+  for (let again = true; again;) {
+    again = false;
+    for (const p of parts) {
+      if (dead.has(p) || !((p.a >= 0 && deg.get(p.a) === 1) || (p.b >= 0 && deg.get(p.b) === 1))) continue;
+      dead.add(p); again = true;
+      for (const i of [p.a, p.b]) if (i >= 0) deg.set(i, deg.get(i) - 1);
+    }
+  }
+  if (grounds.length) {
+    for (const p of meas) if (root(at(p.a)) !== gr || dead.has(p)) err([p], `${p.n.label} is not on a closed path to GND (it ends in an open branch), so its MEAS would read 0 by accident. Connect it to GND or remove the MEAS.`);
+    const lost = new Map();
+    for (const p of parts) if (root(at(p.a)) !== gr && !p.n.badEnd) { const k = root(at(p.a)); (lost.get(k) || lost.set(k, []).get(k)).push(p); }
+    for (const ps of lost.values()) warn(ps[0].n.ln, `${names(ps)} ${ps.length === 1 ? 'is' : 'are'} not connected to GND; drawn but not solved.`);
+  }
+  // shorted parts and open ends
+  for (const p of parts) {
+    if (p.a === p.b) { if (!p.n.badEnd) warn(p.n.ln, `both ends of ${p.n.label} are the same node, so it reads 0 V and 0 A.`); continue; }
+    // only on the part's own group: a whole group with no ground is already reported as floating
+    if (!grounds.length || root(at(p.a)) !== gr || p.n.badEnd) continue;
+    for (const [i, side] of [[p.a, 'left'], [p.b, 'right']]) if (i >= 0 && touch.get(i).length === 1) warn(p.n.ln, `the ${side} end of ${p.n.label} is open: nothing is connected there, so nothing flows through it.`);
+  }
+  // two GND points is the normal closed loop (one at each end); more than that is worth a note
+  if (grounds.length > 2) warn(grounds[2].ln, `GND appears ${grounds.length} times; all of them are one ground, so these points are wired together.`);
+  return bad;
+}
+
+function simulate(model) {
+  const { nodes, edges, warnings } = model;
+  const els = nodes.filter(n => n.type === 'el');
+  const stop = why => { warnings.push('Not simulated: ' + why); return { ok: false, why }; };
+  const flow = els.find(n => !EE[n.shape]);
+  if (flow) return stop(`${flow.label} is a flow block, and a circuit can only hold circuit parts.`);
+
+  const { parts, N, byName } = circuitGraph(model);
+
+  // AC sources first: their omegas say which solves are needed, and whether CAP and IND need values.
+  const omegas = [];
+  for (const p of parts.filter(p => AC_TWIN[p.n.shape])) {
+    p.ac = readAC(p.n.shape, p.n.raw);
+    if (!p.ac) return stop(`${p.n.label} needs an AC value: amplitude, omega and angle, as 5 cos(377t + 30) or [5, 377, 30].`);
+    if (!(p.ac.w > 0)) return stop(`${p.n.label} has omega ${p.ac.w}; an AC source needs omega above 0 (a steady value is a ${CODE_WORDS[AC_TWIN[p.n.shape]]}).`);
+    if (!omegas.includes(p.ac.w)) omegas.push(p.ac.w);
+  }
+  const hasAC = omegas.length > 0;
+  const diodes = parts.filter(p => p.n.shape === 'D');
+  // a diode bends the waveform, so phasors (one sinusoid per omega) no longer describe it
+  if (hasAC && diodes.length) return stop(`${diodes[0].n.label} is a diode in a circuit with AC sources; that needs a time simulation, which comes in a later version.`);
+
+  // Values, and the voltage-like parts that need a current unknown.
+  let m = 0;
+  for (const p of parts) {
+    const s = p.n.shape;
+    if (s === 'VS' || s === 'DVS' || s === 'L' || s === 'VAC') p.k = m++;
+    if (s === 'D') {
+      p.dio = readDiode(p.n.raw);
+      if (!p.dio) return stop(`${p.n.label} needs DIODE = FWD_VOLT or [FWD_VOLT, REV_VOLT], numbers in volts with REV_VOLT above 0, for example [0.7, 5.1] (it has "${p.n.raw}").`);
+      continue;
+    }
+    if (AC_TWIN[s]) continue;
+    if ((s === 'C' || s === 'L') && !hasAC) continue; // open and short in DC, whatever their value
+    if (s === 'DVS' || s === 'DIS') { p.ctrl = readControl(p.n.raw, s); if (!p.ctrl) return stop(`${p.n.label} needs a value: a number or gain*V(name) or gain*I(name), for example [2*V(R1)].`); continue; }
+    p.val = eeNumber(s, p.n.raw);
+    if (!isFinite(p.val)) return stop(`${p.n.label} needs a number as its value (it has ${p.n.raw == null ? 'none' : '"' + p.n.raw + '"'}).`);
+    if (s === 'R' && p.val === 0) return stop(`${p.n.label} is 0 Ω; use a wire or a tiny value.`);
+    if ((s === 'C' || s === 'L') && !(p.val > 0)) return stop(`${p.n.label} needs a value above 0 in a circuit with AC sources.`);
+  }
+  // An AC source's phasor at omega w: its value when w is its own omega, zero otherwise (superposition).
+  const phasorAt = (p, w) => p.ac.w === w ? [p.ac.amp * Math.cos(p.ac.ph * Math.PI / 180), p.ac.amp * Math.sin(p.ac.ph * Math.PI / 180)] : [0, 0];
+  // A reading V or I of part p at omega w, read the way MEAS reads it, as complex weights on the unknowns plus a
+  // constant: reading = Σ w·x + c. It also steers dependent sources.
+  const reading = (p, q, w) => {
+    const sg = p.n.rev ? -1 : 1, wt = new Map();
+    const add = (j, re, im) => { if (j < 0) return; const o = wt.get(j) || [0, 0]; wt.set(j, [o[0] + re, o[1] + im]); };
+    if (q === 'V') { add(p.a, sg, 0); add(p.b, -sg, 0); return { w: wt, c: [0, 0] }; }
+    const s = p.n.shape;
+    if (s === 'R') { add(p.a, sg / p.val, 0); add(p.b, -sg / p.val, 0); return { w: wt, c: [0, 0] }; }
+    if (s === 'C') { if (w) { add(p.a, 0, sg * w * p.val); add(p.b, 0, -sg * w * p.val); } return { w: wt, c: [0, 0] }; }
+    if (s === 'IS') return { w: wt, c: [w === 0 ? p.val : 0, 0] }; // along its own arrow it is just its value
+    if (s === 'IAC') return { w: wt, c: phasorAt(p, w) };
+    if (p.k !== undefined) { add(N + p.k, sg * (s === 'L' ? 1 : (p.n.rev ? 1 : -1)), 0); return { w: wt, c: [0, 0] }; }
+    return null; // a diode's current is not linear, so it cannot steer a dependent source here
+  };
+  for (const p of parts.filter(p => p.ctrl && p.ctrl.ref)) {
+    const t = byName.get(p.ctrl.ref);
+    if (!t) return stop(`${p.n.label} refers to ${p.ctrl.ref}, which is not a part in this circuit.`);
+    if (t.n.shape === 'DVS' || t.n.shape === 'DIS') return stop(`${p.n.label} refers to another dependent source, which is not supported yet.`);
+    if (!reading(t, p.ctrl.q, 0)) return stop(`${p.n.label} cannot follow the current of the diode ${t.n.label}.`);
+    p.t = t;
+  }
+
+  // DC is solved when something drives it (a DC source, or a dependent source with a fixed number) or when there is
+  // nothing else to solve; each AC omega is solved once.
+  const dcDriven = parts.some(p => p.n.shape === 'VS' || p.n.shape === 'IS' || (p.ctrl && !p.ctrl.ref));
+  const solves = [...(dcDriven || !hasAC ? [0] : []), ...omegas];
+  const S = N + m, T = 2 * S;
+  function diodeLine(p, state) {
+    if (state === 'on') return [DIODE_G, -DIODE_G * p.dio.fwd];
+    if (state === 'rev') return [DIODE_G, DIODE_G * p.dio.rev];
+    return [GMIN, 0];
+  }
+  function diodeV(p, x) {
+    const lo = p.n.rev ? p.b : p.a, hi = p.n.rev ? p.a : p.b;
+    return (lo >= 0 ? x[lo] : 0) - (hi >= 0 ? x[hi] : 0);
+  }
+  let lastStates = null;
+  const solveAt = w => {
+    // each diode is on, off or broken down ('rev'); start them all on and correct the ones the answer contradicts
+    const st = new Map(diodes.map(p => [p, 'on']));
+    let x = null;
+    for (let it = 0; it < 200; it++) {
+      // the unknowns are [real parts, imaginary parts]; a complex entry a + jb fills four places
+      const A = Array.from({ length: T }, () => new Float64Array(T)), z = new Float64Array(T);
+      const put = (r, c, re, im) => {
+        if (r < 0 || c < 0) return;
+        A[r][c] += re; A[S + r][S + c] += re;
+        if (im) { A[r][S + c] -= im; A[S + r][c] += im; }
+      };
+      const rhs = (r, re, im) => { if (r >= 0) { z[r] += re; z[S + r] += im; } };
+      const y = (a, b, re, im) => { put(a, a, re, im); put(b, b, re, im); put(a, b, -re, -im); put(b, a, -re, -im); };
+      for (let i = 0; i < N; i++) put(i, i, GMIN, 0);
+      for (const p of parts) {
+        const s = p.n.shape, rev = p.n.rev;
+        const lo = rev ? p.b : p.a, hi = rev ? p.a : p.b; // along the part's direction: current goes lo to hi
+        const g = p.ctrl && p.ctrl.gain, lin = p.t ? reading(p.t, p.ctrl.q, w) : null;
+        if (s === 'R') y(p.a, p.b, 1 / p.val, 0);
+        else if (s === 'C') { if (w) y(p.a, p.b, 0, w * p.val); }
+        else if (s === 'VS' || s === 'DVS' || s === 'L' || s === 'VAC') {
+          // the current unknown enters the + end; + is hi for a source (− to + along the path), a for an inductor
+          const pl = s === 'L' ? p.a : hi, mi = s === 'L' ? p.b : lo, k = N + p.k;
+          put(pl, k, 1, 0); put(k, pl, 1, 0); put(mi, k, -1, 0); put(k, mi, -1, 0);
+          if (s === 'L' && w) put(k, k, 0, -w * p.val); // V(a) − V(b) = jωL·I
+          if (s === 'VS' && w === 0) rhs(k, p.val, 0);
+          if (s === 'VAC') rhs(k, ...phasorAt(p, w));
+          if (s === 'DVS') {
+            if (lin) { for (const [j, [re, im]] of lin.w) put(k, j, -g * re, -g * im); rhs(k, g * lin.c[0], g * lin.c[1]); }
+            else if (w === 0) rhs(k, g, 0);
+          }
+        } else if (s === 'IS' || s === 'DIS' || s === 'IAC') {
+          // the source pushes its current out at hi and draws it in at lo
+          let c = [0, 0];
+          if (s === 'IS') c = [w === 0 ? p.val : 0, 0];
+          else if (s === 'IAC') c = phasorAt(p, w);
+          else if (lin) {
+            for (const [j, [re, im]] of lin.w) { put(hi, j, -g * re, -g * im); put(lo, j, g * re, g * im); }
+            c = [g * lin.c[0], g * lin.c[1]];
+          } else if (w === 0) c = [g, 0];
+          rhs(hi, c[0], c[1]); rhs(lo, -c[0], -c[1]);
+        } else if (s === 'D') {
+          // anode is lo, cathode hi. The current anode to cathode is I = g·(v − hold): on holds +FWD, broken down
+          // holds −REV, off is open (only GMIN, hold 0).
+          const [gd, ieq] = diodeLine(p, st.get(p));
+          y(lo, hi, gd, 0);
+          rhs(lo, -ieq, 0); rhs(hi, ieq, 0);
+        }
+      }
+      x = solveLinear(A, z);
+      if (!x) return null;
+      if (!diodes.length) break;
+      // A state is wrong when its own answer contradicts it: on with current flowing backwards, broken down with
+      // current flowing forwards, or off with the voltage past FWD or past −REV. Small margins keep a diode sitting
+      // right at its threshold from flipping back and forth.
+      let changed = false;
+      for (const p of diodes) {
+        const v = diodeV(p, x), cur = st.get(p), [gd, ieq] = diodeLine(p, cur), i = gd * v + ieq;
+        let next = cur;
+        if (cur === 'on' && i < -1e-12) next = 'off';
+        else if (cur === 'rev' && i > 1e-12) next = 'off';
+        else if (cur === 'off' && v > p.dio.fwd + 1e-9) next = 'on';
+        else if (cur === 'off' && p.dio.rev !== null && v < -p.dio.rev - 1e-9) next = 'rev';
+        if (next !== cur) { st.set(p, next); changed = true; }
+      }
+      if (!changed) break;
+      if (it === 199) return 'diodes';
+    }
+    lastStates = st;
+    return x;
+  };
+
+  // Readings for every MEAS marker: one term per solve, added up by superposition.
+  // (diodeLine and diodeV are hoisted from below so solveAt and the readings share them.)
+  const terms = new Map(parts.filter(p => p.n.meas).map(p => [p, []]));
+  for (const w of solves) {
+    const x = solveAt(w);
+    if (x === 'diodes') return stop('the diodes did not settle (no convergence after 200 steps).');
+    if (!x) return stop('the circuit cannot be solved: look for a loop made only of voltage sources and inductors, or two sources fighting.');
+    for (const [p, list] of terms) {
+      let re, im = 0;
+      if (p.n.shape === 'D') {
+        const v = diodeV(p, x), [gd, ieq] = diodeLine(p, lastStates.get(p));
+        re = p.n.meas === 'V' ? v : gd * v + ieq;
+      } else {
+        const r = reading(p, p.n.meas, w);
+        [re, im] = r.c;
+        for (const [j, [wr, wi]] of r.w) { re += wr * x[j] - wi * x[S + j]; im += wr * x[S + j] + wi * x[j]; }
+      }
+      list.push({ w, re: Math.abs(re) < READ_FLOOR ? 0 : re, im: Math.abs(im) < READ_FLOOR ? 0 : im });
+    }
+  }
+  const results = [];
+  for (const [p, list] of terms) {
+    const unit = p.n.meas === 'V' ? 'V' : 'A', dc = list.find(t => t.w === 0);
+    p.n.measNum = dc ? dc.re : 0;
+    p.n.measAC = list.filter(t => t.w > 0).map(t => ({ w: t.w, re: t.re, im: t.im }));
+    p.n.measValue = fmtReading(list, unit, p.n.measForm || 'polar');
+    // the reading sits between + and − (or after the arrow), so the part widens to keep them apart
+    p.n.w = Math.max(p.n.w, Math.round(p.n.measValue.length * 7 + 40));
+    results.push([p.n.label, p.n.meas, p.n.measNum, ...p.n.measAC.map(t => [t.w, t.re, t.im])]);
+  }
+  return { ok: true, results, nodes: N, omegas: solves };
+}
+
+// A reading made of a DC term and one phasor per omega, written as their sum. A DC-only reading is a plain number
+// whatever the AC form. With several terms in polar or rectangular form each phasor names its omega, because
+// phasors at different omegas cannot be added into one; the sinusoidal form names it already.
+function fmtReading(list, unit, form) {
+  const dc = list.find(t => t.w === 0), ac = list.filter(t => t.w > 0 && (t.re || t.im));
+  if (!ac.length) return fmtEng(dc ? dc.re : 0, unit);
+  const out = dc && dc.re ? [fmtEng(dc.re, unit)] : [];
+  const tag = out.length + ac.length > 1 && form !== 'sinusoidal';
+  // a rectangular phasor has its own + or −, so in a sum it is bracketed to read as one term
+  const wrap = s => tag && form === 'rectangular' ? `(${s})` : s;
+  for (const t of ac) out.push(wrap(formatPhasor(t.re, t.im, unit, form, t.w)) + (tag ? ` @ ${+t.w.toPrecision(6)} rad/s` : ''));
+  return out.join(' + ');
+}
+
+// gain*V(name), V(name)*gain, gain*I(name), or a plain number (then a fixed value). Brackets are optional here.
+function readControl(raw, kind) {
+  if (raw == null) return null;
+  const s = String(raw).trim().replace(/^\[|\]$/g, '').trim();
+  const num = '([+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:e[+-]?\\d+)?)';
+  const m = s.match(new RegExp('^(?:' + num + '\\s*\\*\\s*)?([VI])\\s*\\(\\s*([^)]+?)\\s*\\)(?:\\s*\\*\\s*' + num + ')?$'));
+  if (m) return { gain: (m[1] ? +m[1] : 1) * (m[4] ? +m[4] : 1), q: m[2], ref: m[3] };
+  const v = eeNumber(kind, s);
+  return isFinite(v) ? { gain: v } : null;
+}
+
+// Gaussian elimination with partial pivoting; null when the matrix is singular.
+function solveLinear(A, z) {
+  const n = z.length, M = A.map((r, i) => { const row = Array.from(r); row.push(z[i]); return row; });
+  for (let c = 0; c < n; c++) {
+    let piv = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[piv][c])) piv = r;
+    if (Math.abs(M[piv][c]) < 1e-18) return null;
+    [M[c], M[piv]] = [M[piv], M[c]];
+    for (let r = c + 1; r < n; r++) {
+      const f = M[r][c] / M[c][c];
+      if (f) for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k];
+    }
+  }
+  const x = new Array(n).fill(0);
+  for (let r = n - 1; r >= 0; r--) {
+    let s = M[r][n];
+    for (let k = r + 1; k < n; k++) s -= M[r][k] * x[k];
+    x[r] = s / M[r][r];
+  }
+  return x;
+}
+
+// Where the end command sits in a line (the word or its letter), so the editor can mark it in red.
+function endWordRange(raw) {
+  const cs = specifierStart(raw);
+  const w = cs < 0 ? null : raw.slice(cs).match(/(^|[^\w^])(end)(?![\w^])/i);
+  if (!w) return null;
+  const from = cs + w.index + w[1].length;
+  return { from, to: from + w[2].length };
+}
+
+// Strength per lane for the branches that are still waiting on a return. The text is cut at the caret
+// line, so what is highlighted matches what has been typed so far. Lane numbers come from the order
+// branches open, so they are the same in the cut text and in the whole text.
+function highlightAt(src, caretLn) {
+  const out = { lanes: new Map(), lines: new Map(), wait: null };
+  const all = onlyDesignAt(src.split(/\r?\n/), caretLn);
+  const m = parse(all.slice(0, caretLn).join('\n'), { partial: true });
+  // m0 is the text above the caret line: what is still unresolved before this line is typed. A line on a
+  // path resolves the oldest-created pending return aimed at that path, so that is the one shown strongest.
+  const m0 = parse(all.slice(0, caretLn - 1).join('\n'), { partial: true });
+  const open = b => b.state === 'waiting' || b.state === 'pending';
+  for (const b of m0.branches) if (open(b)) out.lanes.set(b.lane, 'weak');
+  for (const b of m.branches) if (open(b)) out.lanes.set(b.lane, 'weak');
+  const cur = m.info.get(caretLn);
+  const top0 = m0.waitingLanes[m0.waitingLanes.length - 1];
+  const due = (cur && cur.isBranch) ? null
+    : m0.branches.filter(b => b.state === 'pending' && b.target === top0).sort((a, b) => a.order - b.order)[0];
+  // Without a rejoin due, fall back to the open branch the line continues; once "return" is on the line
+  // it narrows to the branch that return closes (or, on a branch line, the new branch).
+  const strong = due ? due.lane
+    : cur ? (cur.ret ? (cur.isBranch ? cur.lane : cur.before) : cur.before) : top0;
+  if (strong > 0 && out.lanes.has(strong)) out.lanes.set(strong, 'strong');
+  for (const b of m.branches.concat(m0.branches)) {
+    const s = out.lanes.get(b.lane);
+    if (!s) continue;
+    for (const ln of b.lines) if (s === 'strong' || !out.lines.has(ln)) out.lines.set(ln, s);
+  }
+  // Red bubble on the "wait" of the innermost open branch, but only while the caret line sits on that
+  // branch's own level. A branch line is one level deeper, so branching off from inside it shows nothing,
+  // and once "return" is on the line the branch is no longer waiting, so the bubble clears.
+  out.wait = null;
+  const top = cur ? cur.before : m.waitingLanes[m.waitingLanes.length - 1];
+  const nested = !!(cur && cur.isBranch);
+  const wb = m.branches.find(b => b.lane === top);
+  if (top > 0 && !nested && wb && wb.state === 'waiting') {
+    const ln = wb.lines[0], raw = src.split(/\r?\n/)[ln - 1];
+    const cs = specifierStart(raw);
+    // the word in any case, the letter only lower case (single letters are case-sensitive)
+    const w = cs < 0 ? null : raw.slice(cs).match(/(^|[^\w^])([Ww][Aa][Ii][Tt]|w)(?![\w^])/);
+    if (w) { const from = cs + w.index + w[1].length; out.wait = { ln, from, to: from + w[2].length }; }
+  }
+  return out;
+}
+
+// Index where the command part of a line starts (just after the closing delimiter), or -1.
+function specifierStart(raw) {
+  const m = raw.match(/^\s*\*\s*[^\\]*?\s*\\\s*(.*)$/);
+  return m ? raw.length - m[1].length : -1;
+}
+
+// "return2" becomes "return^2" in the command part of a line; the caret moves with the text.
+function convertReturnDigits(text, caret) {
+  const lines = text.split('\n');
+  let pos = 0, shift = 0;
+  const done = lines.map(raw => {
+    const start = pos; pos += raw.length + 1;
+    const m = raw.match(/^\s*\*\s*[^\\]*?\s*\\\s*(.*)$/);
+    if (!m) return raw;
+    const cut = raw.length - m[1].length;
+    let rest = m[1], added = 0;
+    rest = rest.replace(/\breturn(\d+)/gi, (all, d, at) => {
+      if (start + cut + at + 6 <= caret) added++;
+      return 'RETURN^' + d; // capitals like every specifier word, or RETURN typed in capitals would drop to lower case here
+    });
+    shift += added;
+    return raw.slice(0, cut) + rest;
+  });
+  return { text: done.join('\n'), caret: caret + shift };
+}
+
+// Everything can be typed on one line: an asterisk that opens a new element list (one that comes after a
+// closed list on the same line) starts a new line. An asterisk inside an open list is left alone.
+function splitSequences(text, caret) {
+  let pos = 0, shift = 0, cc = caret;
+  const out = text.split('\n').map(raw => {
+    const start = pos; pos += raw.length + 1;
+    let inList = false, seen = false, depth = 0;
+    const cuts = [];
+    for (let k = 0; k < raw.length; k++) {
+      // an asterisk inside a bracketed value is part of the value, not a new line
+      if (!inList && raw[k] === '[') depth++;
+      else if (!inList && raw[k] === ']' && depth > 0) depth--;
+      else if (!inList && depth === 0 && raw[k] === '*') { if (seen) cuts.push(k); inList = true; seen = true; }
+      else if (inList && raw[k] === '\\') inList = false;
+    }
+    if (!cuts.length) return raw;
+    let res = '', last = 0;
+    for (const k of cuts) {
+      const seg = raw.slice(last, k), kept = seg.replace(/\s+$/, ''), removed = seg.length - kept.length;
+      const a = start + k;
+      if (cc > a - removed && cc < a) cc = a; // a caret in the dropped spaces lands on the new line
+      if (cc >= a) shift += 1 - removed;
+      res += kept + '\n'; last = k;
+    }
+    return res + raw.slice(last);
+  });
+  return { text: out.join('\n'), caret: cc + shift };
+}
+
+// Indentation is derived from the commands (three spaces per level) and typed spaces are discarded.
+function reindentWithCaret(text, caret) {
+  const m = parseSheet(text, { partial: true });
+  const lines = text.split('\n');
+  let pos = 0, delta = 0, newCaret = caret;
+  const out = lines.map((raw, i) => {
+    const start = pos; pos += raw.length + 1;
+    const onCaret = caret >= start && caret <= start + raw.length;
+    let level = m.levels.get(i + 1);
+    if (level === undefined) {
+      // A fresh blank line under the caret starts at the level a plain line would have there, so the
+      // first character typed already sits in the right place.
+      // (a line holding only the opening asterisk counts as blank: nothing typed after it yet)
+      if (!(onCaret && (!raw.trim() || /^\s*\*\s*$/.test(raw)) && i > 0)) return raw;
+      level = startsDesign(lines, i + 1) ? 0 : Math.max(0, parse(onlyDesignAt(lines.slice(0, i), i).join('\n'), { partial: true }).waitingLanes.length - 1);
+    }
+    const oldInd = raw.length - raw.trimStart().length;
+    const ind = ' '.repeat(3 * level);
+    if (onCaret) {
+      // caret keeps its place inside the line's content, after the shift from every earlier line
+      newCaret = Math.max(caret + delta + ind.length - oldInd, start + delta + ind.length);
+    }
+    delta += ind.length - oldInd;
+    return ind + raw.trimStart();
+  });
+  // a caret past the last indented line only shifts by the total change
+  if (caret > pos - 1) newCaret = caret + delta;
+  return { text: out.join('\n'), caret: Math.max(0, newCaret) };
+}
+
+// Waits still open once the text through the caret line is read, outermost first. The last one is the
+// innermost: the one the next plain line continues and the next "return" closes.
+function openWaits(src, caretLn) {
+  const all = onlyDesignAt(src.split(/\r?\n/), caretLn);
+  const m = parse(all.slice(0, caretLn).join('\n'), { partial: true });
+  const open = m.branches.filter(b => b.state === 'waiting');
+  return open.map((b, i) => {
+    const body = (all[b.lines[0] - 1].match(/^\s*\*\s*([^\\]*?)\s*\\/) || [, ''])[1];
+    return { ln: b.lines[0], text: body, innermost: i === open.length - 1 };
+  });
+}
+
+// Result shape shared by the three box helpers: new text, caret offset, the line the caret is on (1-based),
+// that line without its tabs (what the box shows) and the caret offset inside it.
+function lineResult(t, c) {
+  const ln = t.slice(0, c).split('\n').length;
+  const ls = t.lastIndexOf('\n', c - 1) + 1;
+  const end = t.indexOf('\n', ls), raw = t.slice(ls, end < 0 ? undefined : end);
+  const ind = raw.length - raw.trimStart().length;
+  return { text: t, caret: c, ln, line: raw.trimStart(), barCaret: Math.max(0, c - ls - ind) };
+}
+
+// The bottom box edits one script line. This puts the box's text into line caretLn, then runs the same
+// clean-up as the script editor (return2, one-line splitting, tabbing).
+function barEdit(text, caretLn, value, valueCaret) {
+  const lines = text.split('\n');
+  while (lines.length < caretLn) lines.push('');
+  lines[caretLn - 1] = value;
+  let t = lines.join('\n');
+  let c = lines.slice(0, caretLn - 1).join('\n').length + (caretLn > 1 ? 1 : 0) + (valueCaret == null ? value.length : valueCaret);
+  let r = convertReturnDigits(t, c); t = r.text; c = r.caret;
+  r = splitSequences(t, c); t = r.text; c = r.caret;
+  r = reindentWithCaret(t, c);
+  return lineResult(r.text, r.caret);
+}
+
+// Enter in the box: a new line under the current one, tabbed to the level a plain line has there.
+function barEnter(text, caretLn) {
+  const lines = text.split('\n');
+  lines.splice(caretLn, 0, '');
+  const r = reindentWithCaret(lines.join('\n'), lines.slice(0, caretLn).join('\n').length + 1);
+  return lineResult(r.text, r.caret);
+}
+
+// Backspace in an empty box: drop that empty line and go back to the end of the one above.
+function barBack(text, caretLn) {
+  if (caretLn < 2) return null;
+  const lines = text.split('\n');
+  lines.splice(caretLn - 1, 1);
+  return lineResult(lines.join('\n'), lines.slice(0, caretLn - 1).join('\n').length);
+}
+
+// Enter does the hotkey's job (Josue, 11/24): on a line whose element list is still open it types the closing \
+// (with a space, so a shorthand letter typed next is written out as usual); on a line that is closed it ends the
+// line and starts the next one with its opening * already typed. A name line has nothing after its \, so Enter
+// closes it and starts the next line at once; a bare * closes the diagram (*\), after which Enter is a plain line
+// break. A shorthand letter left at the end of the line is written out first, as Enter always did. Returns the
+// tidied text and caret (lineResult form), or null when Enter should just break the line: in the middle of a line,
+// inside an open [ ] value, or after the diagram is closed. Shift+Enter is always a plain line break (editor code).
+function enterAt(text, caret) {
+  // the letter before the caret is written out as if a line break had been typed, and that line break taken back
+  const x = expandAtCaret(text.slice(0, caret) + '\n' + text.slice(caret), caret + 1);
+  if (x) { text = x.text.slice(0, x.caret - 1) + x.text.slice(x.caret); caret = x.caret - 1; }
+  const ls = text.lastIndexOf('\n', caret - 1) + 1, nl = text.indexOf('\n', caret), le = nl < 0 ? text.length : nl;
+  if (text.slice(caret, le).trim()) return null;
+  const before = text.slice(ls, caret).replace(/\s+$/, ''), cut = ls + before.length;
+  const at = s => { const t = text.slice(0, cut) + s + text.slice(le), c = cut + s.length; return tidy(t, c); };
+  const tidy = (t, c) => {
+    let r = convertReturnDigits(t, c); r = splitSequences(r.text, r.caret); r = reindentWithCaret(r.text, r.caret);
+    return lineResult(r.text, r.caret);
+  };
+  const firstLine = startsDesign(text.split('\n'), text.slice(0, ls).split('\n').length);
+  if (!before.trim()) return at(before + '*');
+  const open = before.match(/^\s*\*([^\\]*)$/);
+  if (open) {
+    if (firstLine) return at('\\\n*');             // the name line: close it and go on
+    if (!open[1].trim()) return at('\\');           // a bare *: this closes the diagram
+    if (/,$/.test(before)) { const t = text.slice(0, cut - 1) + '\\ ' + text.slice(le); return tidy(t, cut + 1); } // the comma a space typed
+    return at('\\ ');                               // an element list: on to its specifier
+  }
+  if (/^\s*\*\s*\\$/.test(before)) return at('\n*');     // the closing *\ itself: the next design starts on the next line (V8)
+  if (!before.includes('\\')) return null;
+  // In the specifier (Josue, 11/25): Enter at the start of an entry (right after the backslash, or after a comma)
+  // opens a bracket for that element; inside a bracket it closes it with "], " ready for the next element; right
+  // after that, the dangling comma goes and the next line starts. After a word that is not in a bracket it still
+  // starts the next line.
+  const spec = before.slice(before.indexOf('\\') + 1);
+  // Enter right after = does nothing until something is typed after it (Josue, 11/25); anything will do
+  if (/=$/.test(spec)) return lineResult(text, caret);
+  // Enter right after a word that expects a value types " = " for it
+  const vw = spec.match(/(^|[\s,;[])([A-Za-z_]+)$/);
+  if (vw && takesValue(vw[2]) && inSpecifier(text.slice(ls, cut - vw[2].length))) return at(' = ');
+  let depth = 0;
+  for (const ch of spec) { if (ch === '[') depth++; else if (ch === ']' && depth > 0) depth--; }
+  if (depth > 0) return at(']'.repeat(depth) + ', ');
+  if (/\],$/.test(spec)) { const t = text.slice(0, cut - 1) + '\n*' + text.slice(le); return tidy(t, cut + 1); }
+  if (!spec.trim() || /,$/.test(spec)) return at(' [');
+  return at('\n*');
+}
+
+const CFG = { H: 44, GAP: 46, LANE: 84, TOP: 78, LEFT: 36 };
+
+// The layout works in flow coordinates, p along the path and q across it (one lane per branch level), and maps
+// them to the page by direction (V6, Josue 11/24): left to right puts p on x, top-down puts p on y. Blocks stay
+// upright either way, so in top-down a block spans its height along the path; a circuit part is turned to run down
+// the page and keeps its length, and its texts move beside it. ext is half of what an element spans along the path,
+// which is where the wires meet it.
+function layout(model) {
+  const { nodes, edges } = model, td = SETTINGS.direction === 'td';
+  model.td = td;
+  const inc = nodes.map(() => []);
+  edges.forEach(([a, b]) => inc[b].push(a));
+  const layer = nodes.map(() => 0);
+  nodes.forEach((n, i) => { layer[i] = inc[i].length ? Math.max(...inc[i].map(a => layer[a])) + 1 : 0; });
+  const nLayers = Math.max(0, ...layer) + 1;
+  nodes.forEach(n => { n.ext = (td && n.type === 'el' && !EE[n.shape] ? CFG.H : n.w) / 2; });
+  const colW = new Array(nLayers).fill(0);
+  nodes.forEach((n, i) => { colW[layer[i]] = Math.max(colW[layer[i]], 2 * n.ext); });
+  const colP = []; let cum = td ? 64 : CFG.LEFT;
+  for (let l = 0; l < nLayers; l++) { colP[l] = cum + colW[l] / 2; cum += colW[l] + CFG.GAP; }
+  if (!td) {
+    // a MEAS marker sits above a part's name, so the top row moves down to keep it clear of the title
+    const markTop = nodes.some(n => n.meas && n.lane === 0) ? 28 : 0;
+    const top = CFG.TOP + markTop;
+    nodes.forEach((n, i) => { n.p = colP[layer[i]]; n.q = top + n.lane * CFG.LANE; });
+    model.width = Math.max(360, cum - CFG.GAP + CFG.LEFT);
+    const bottom = top + (model.lanes - 1) * CFG.LANE;
+    model.height = bottom + CFG.H / 2 + 40;
+  } else {
+    // how far each element reaches either side of its lane: a block half its width; a part its marker on the left
+    // and its name and value on the right
+    const side = n => {
+      if (n.type === 'junction') return [5, 5];
+      if (!EE[n.shape]) return [n.w / 2, n.w / 2];
+      return [n.meas ? (n.measValue || n.meas).length * 7 + 34 : 16,
+        22 + Math.max(SHOW_EE_NAME ? n.label.length * 8 : 0, n.value ? n.value.length * 7.5 : 0)];
+    };
+    const sides = nodes.map(side);
+    const L = Math.max(16, ...sides.map(x => x[0])), R = Math.max(16, ...sides.map(x => x[1]));
+    // one pitch for every lane, so branch wires stay straight
+    const pitch = Math.max(CFG.LANE, L + R + 30), left = CFG.LEFT + L;
+    nodes.forEach((n, i) => { n.p = colP[layer[i]]; n.q = left + n.lane * pitch; });
+    const last = left + (model.lanes - 1) * pitch;
+    model.width = Math.max(360, last + R + 30);
+    model.height = cum - CFG.GAP + 40;
+  }
+  nodes.forEach(n => { n.x = td ? n.q : n.p; n.y = td ? n.p : n.q; });
+  // whole pixels: text widths are estimates in fractions, and the zoom code reads the page size as an integer
+  model.width = Math.ceil(model.width); model.height = Math.ceil(model.height);
+  return model;
+}
+
+const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+// Black by default (Josue, 11/24): parts, blocks, labels, wires and junctions, the way a schematic is printed.
+// A color word still tints one element. START_FILL is a neutral gray so the start and end shapes stay distinct
+// without a blue tint against the black outlines.
+const INK = '#111111';
+const START_FILL = '#f1f3f5';
+const BAD = '#e5383b'; // same red as the wait bubble in the script, so the two read as one kind of warning
+const HL = { strong: { stroke: '#d9480f', fill: '#ffe8d9', w: 3 }, weak: { stroke: '#d98a1f', fill: '#fff4e0', w: 2.5 } };
+
+function labelSVG(label, x, y, ink, size) {
+  const m = label.match(/^([^_]*)_(.+)$/);
+  const fs = size || 17, sub = Math.round(fs * 0.7);
+  const inner = m ? `${esc(m[1])}<tspan dy="${Math.round(fs * 0.3)}" font-size="${sub}">${esc(m[2])}</tspan>` : esc(label);
+  return `<text x="${x}" y="${y + Math.round(fs * 0.3)}" text-anchor="middle" font-family="system-ui, Segoe UI, sans-serif" font-size="${fs}" fill="${ink || INK}">${inner}</text>`;
+}
+// Values are free text, so they are drawn as typed: no subscript reading of "_".
+function valueSVG(value, x, y, ink) {
+  return `<text x="${x}" y="${y + 5}" text-anchor="middle" font-family="system-ui, Segoe UI, sans-serif" font-size="14" fill="${ink || INK}">${esc(value)}</text>`;
+}
+const smallText = (t, x, y, anchor) => `<text x="${x}" y="${y}" text-anchor="${anchor || 'start'}" font-family="system-ui, Segoe UI, sans-serif" font-size="11" fill="#555">${esc(t)}</text>`;
+
+function shapeSVG(kind, x0, y0, w, h, fill, stroke, sw) {
+  const a = `fill="${fill}" stroke="${stroke}" stroke-width="${sw}" stroke-linejoin="round"`;
+  const poly = pts => `<polygon points="${pts.map(p => p.join(',')).join(' ')}" ${a}/>`;
+  if (kind === 'pill') return `<rect x="${x0}" y="${y0}" width="${w}" height="${h}" rx="${h / 2}" ${a}/>`;
+  if (kind === 'flag') return poly([[x0, y0], [x0 + w, y0], [x0 + w, y0 + h - 14], [x0 + w - 14, y0 + h], [x0, y0 + h]]);
+  if (kind === 'tri') return poly([[x0, y0], [x0, y0 + h], [x0 + w, y0 + h / 2]]);
+  if (kind === 'circ') return `<ellipse cx="${x0 + w / 2}" cy="${y0 + h / 2}" rx="${w / 2}" ry="${h / 2}" ${a}/>`;
+  if (kind === 'dia') return poly([[x0 + w / 2, y0], [x0 + w, y0 + h / 2], [x0 + w / 2, y0 + h], [x0, y0 + h / 2]]);
+  // io: slanted sides, but the wires still meet the left and right middle, which lie on the slants
+  if (kind === 'io') { const s = Math.min(14, w * 0.18); return poly([[x0 + s, y0], [x0 + w, y0], [x0 + w - s, y0 + h], [x0, y0 + h]]); }
+  return `<rect x="${x0}" y="${y0}" width="${w}" height="${h}" rx="5" ${a}/>`;
+}
+
+// The ground sign: three bars getting shorter away from the wire. dir is 1 to hang down, -1 to stand up.
+function groundSign(x, y, dir, stroke, sw) {
+  const bar = (dy, half) => `M${x - half} ${y + dir * dy} H${x + half}`;
+  return `<path d="${bar(0, 11)} ${bar(5, 7)} ${bar(10, 3)}" fill="none" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round"/>`;
+}
+
+// An EE part is drawn on the wire itself: leads from both edges of its slot to a symbol in the middle, so the
+// wires meet it at the left and right middle like every other block and the layout needs no special case.
+function eeSymbolSVG(kind, x0, y, w, stroke, sw, through) {
+  const cx = x0 + w / 2, x1 = x0 + w;
+  const a = `fill="none" stroke="${stroke}" stroke-width="${sw}" stroke-linejoin="round" stroke-linecap="round"`;
+  const leads = half => `<path d="M${x0} ${y} H${cx - half} M${cx + half} ${y} H${x1}" ${a}/>`;
+  if (kind === 'R') { // zigzag, six strokes
+    let d = `M${cx - 18} ${y}`;
+    for (let k = 0; k < 6; k++) d += ` L${cx - 18 + 6 * k + 3} ${y + (k % 2 ? 8 : -8)}`;
+    return leads(18) + `<path d="${d} L${cx + 18} ${y}" ${a}/>`;
+  }
+  if (kind === 'C') return leads(4) + `<path d="M${cx - 4} ${y - 12} V${y + 12} M${cx + 4} ${y - 12} V${y + 12}" ${a}/>`;
+  if (kind === 'L') { // four humps
+    let d = `M${cx - 20} ${y}`;
+    for (let k = 0; k < 4; k++) d += ' a5 5 0 0 1 10 0';
+    return leads(20) + `<path d="${d}" ${a}/>`;
+  }
+  // Sources: an independent one is a circle, a dependent one a diamond (the usual schematic convention). A voltage
+  // source carries − and +; a current source an arrow along the path, left to right.
+  if (kind === 'VS' || kind === 'IS' || kind === 'DVS' || kind === 'DIS') {
+    const body = kind[0] === 'D'
+      ? `<polygon points="${cx - 15},${y} ${cx},${y - 15} ${cx + 15},${y} ${cx},${y + 15}" fill="#fff" stroke="${stroke}" stroke-width="${sw}" stroke-linejoin="round"/>`
+      : `<circle cx="${cx}" cy="${y}" r="14" fill="#fff" stroke="${stroke}" stroke-width="${sw}"/>`;
+    // − on the left, + on the right: negative to positive along the path (REV mirrors it in renderSVG)
+    const mark = kind.endsWith('VS')
+      ? `<path d="M${cx - 10} ${y} h7 M${cx + 3} ${y} h7 M${cx + 6.5} ${y - 3.5} v7" ${a} stroke-width="1.6"/>`
+      : `<path d="M${cx - 8} ${y} H${cx + 6} M${cx + 2} ${y - 4} L${cx + 7} ${y} L${cx + 2} ${y + 4}" ${a} stroke-width="1.8"/>`;
+    return leads(kind[0] === 'D' ? 15 : 14) + body + mark;
+  }
+  // AC sources: a circle with a sine wave inside (the usual AC sign). The voltage source keeps a small − and + below
+  // the wave and the current source its arrow, since both have a direction like their DC twins.
+  if (kind === 'VAC' || kind === 'IAC') {
+    const wave = (wy, half) => `<path d="M${cx - half} ${wy} q${half / 2} ${-half * 0.9} ${half} 0 t${half} 0" ${a} stroke-width="1.6"/>`;
+    const mark = kind === 'VAC'
+      ? wave(y - 4, 7) + `<path d="M${cx - 10} ${y + 6} h5 M${cx + 5} ${y + 6} h5 M${cx + 7.5} ${y + 3.5} v5" ${a} stroke-width="1.4"/>`
+      : wave(y - 6, 5) + `<path d="M${cx - 8} ${y + 4} H${cx + 6} M${cx + 2} ${y} L${cx + 7} ${y + 4} L${cx + 2} ${y + 8}" ${a} stroke-width="1.6"/>`;
+    return leads(14) + `<circle cx="${cx}" cy="${y}" r="14" fill="#fff" stroke="${stroke}" stroke-width="${sw}"/>` + mark;
+  }
+  // GND: a ground sign hangs from the middle; the wire runs on to the right only when something follows (through)
+  if (kind === 'GND') return `<path d="M${x0} ${y} H${through ? x1 : cx} M${cx} ${y} V${y + 10}" ${a}/>` + groundSign(cx, y + 10, 1, stroke, sw);
+  // D: anode on the left, the bar (cathode) on the right
+  return leads(10) + `<polygon points="${cx - 10},${y - 10} ${cx - 10},${y + 10} ${cx + 10},${y}" fill="${stroke}" stroke="${stroke}" stroke-width="${sw}" stroke-linejoin="round"/>` +
+    `<path d="M${cx + 10} ${y - 10} V${y + 10}" ${a}/>`;
+}
+
+// The MEAS marker, above the part's name. Its direction follows the current: left to right along the path, or
+// right to left on a reversed part. V is drawn + ... − with + where the current enters (the passive sign convention);
+// I is an arrow the way the current flows. The text is the quantity until a solver gives n.measValue (Josue, 11/24:
+// "marker now, number later"), then it is the reading, for example +5 V−.
+function measSVG(n, x0, ink, td) {
+  if (td) return measSVGDown(n, ink);
+  const y = n.y - 42, dir = n.rev ? -1 : 1, x1 = x0 + n.w;
+  const t = (s, x, size) => `<text x="${x}" y="${y + 4}" text-anchor="middle" font-family="system-ui, Segoe UI, sans-serif" font-size="${size || 12}" fill="${ink}">${esc(s)}</text>`;
+  const shown = n.measValue || n.meas;
+  if (n.meas === 'V') {
+    const [l, r] = dir > 0 ? ['+', '−'] : ['−', '+'];
+    return `<g class="meas">${t(l, x0 + 7, 14)}${t(shown, n.x)}${t(r, x1 - 7, 14)}</g>`;
+  }
+  // I: the reading sits above a short arrow pointing the way the current flows (Josue, 11/25), both centered over
+  // the part, so a long reading is just wider than the arrow and never runs into it
+  const half = 11, ay = y + 2, tip = n.x + dir * half, tail = n.x - dir * half;
+  return `<g class="meas"><path d="M${tail} ${ay} H${tip} M${tip - dir * 4} ${ay - 3.5} L${tip} ${ay} L${tip - dir * 4} ${ay + 3.5}" fill="none" stroke="${ink}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>` +
+    `<text x="${n.x}" y="${y - 5}" text-anchor="middle" font-family="system-ui, Segoe UI, sans-serif" font-size="12" fill="${ink}">${esc(shown)}</text></g>`;
+}
+
+// The marker in the top-down view: on the left of the part, which runs down the page. V is + and − at its two ends
+// (+ where the current enters: the top, or the bottom on a reversed part) with the reading between them; I is a short
+// arrow the way the current flows, with the reading to its left.
+function measSVGDown(n, ink) {
+  const dir = n.rev ? -1 : 1, x = n.x - 18, y0 = n.y - n.w / 2, y1 = n.y + n.w / 2;
+  const t = (str, tx, ty, size, anchor) => `<text x="${tx}" y="${ty}" text-anchor="${anchor || 'middle'}" font-family="system-ui, Segoe UI, sans-serif" font-size="${size || 12}" fill="${ink}">${esc(str)}</text>`;
+  const shown = n.measValue || n.meas;
+  if (n.meas === 'V') {
+    const [hi, lo] = dir > 0 ? ['+', '−'] : ['−', '+'];
+    return `<g class="meas">${t(hi, x, y0 + 14, 14)}${t(shown, x - 8, n.y + 4, 12, 'end')}${t(lo, x, y1 - 4, 14)}</g>`;
+  }
+  // the reading sits above the arrow here too; it ends just past the arrow so it stays clear of the wire
+  const mid = n.y + 4, tip = mid + dir * 9, tail = mid - dir * 9;
+  return `<g class="meas"><path d="M${x} ${tail} V${tip} M${x - 3.5} ${tip - dir * 4} L${x} ${tip} L${x + 3.5} ${tip - dir * 4}" fill="none" stroke="${ink}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>${t(shown, x + 6, n.y - 8, 12, 'end')}</g>`;
+}
+
+// hl is the lane to strength map from highlightAt; omit it for a clean drawing (downloads).
+// interactive adds the click targets used on screen; downloads leave them out.
+// A wire in flow coordinates [p, q]: straight along a lane, or across to the next one.
+function wirePoints(u, v) {
+  if (u.lane === v.lane) return [[u.p + u.ext, u.q], [v.p - v.ext, v.q]];
+  if (v.type === 'junction') return [[u.p + u.ext, u.q], [v.p, u.q], [v.p, v.q]];
+  return [[u.p, u.q], [u.p, v.q], [v.p - v.ext, v.q]];
+}
+function renderSVG(model, hl, interactive) {
+  layout(model);
+  const { nodes, edges, width, height, title } = model;
+  const rank = s => s === 'strong' ? 2 : s === 'weak' ? 1 : 0;
+  const hlOf = n => (hl && n.type === 'el') ? hl.get(n.lane) : undefined;
+  const o = [];
+  o.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`);
+  o.push(`<rect width="100%" height="100%" fill="#fff"/>`);
+  o.push(`<text x="16" y="28" font-family="system-ui, Segoe UI, sans-serif" font-size="15" font-weight="600" fill="#444">${esc(title)}</text>`);
+  // wires are planned in flow coordinates (p along, q across) and mapped to the page, so one plan serves both
+  // directions
+  const td = model.td, pt = ([p, q]) => td ? `${q} ${p}` : `${p} ${q}`;
+  const line = pts => 'M' + pts.map(pt).join(' L');
+  // wires: a highlighted branch also colors the wires that enter and leave it
+  for (const [a, b] of edges) {
+    const u = nodes[a], v = nodes[b];
+    const d = line(wirePoints(u, v));
+    const su = hlOf(u), sv = hlOf(v);
+    const s = rank(su) >= rank(sv) ? su : sv;
+    const st = s ? HL[s] : null;
+    o.push(`<path d="${d}" fill="none" stroke="${st ? st.stroke : INK}" stroke-width="${st ? st.w : 2}" stroke-linejoin="round"/>`);
+    // yes on the wire that carries on from a decision, no on the branch that leaves it
+    if (u.decision) o.push(u.lane === v.lane ? (td ? smallText('yes', u.x + 6, u.y + 16) : smallText('yes', u.x + 7, u.y - 6))
+      : (td ? smallText('no', u.x + 12, u.y - 5) : smallText('no', u.x + 6, u.y + 18)));
+  }
+  // An end of the path that the single GND ties to ground gets its own small ground sign, so the connection is
+  // visible and not only implied. The sign faces down in both views; in top-down it hangs off a stub to the right so
+  // it does not sit on the wire.
+  for (const side of model.tied || []) {
+    const a = nodes[model.mainStart], b = nodes[model.mainEnd];
+    const [p, q] = side === 'start' ? [a.p - a.ext, a.q] : [b.type === 'junction' ? b.p : b.p + b.ext, b.q];
+    // the start's sign goes left of the wire, since the first part sits right against that end
+    const x = td ? q : p, y = td ? p : q, gx = td ? x + (side === 'start' ? -14 : 12) : x;
+    o.push(`<path d="M${x} ${y}${td ? ` H${gx}` : ''} V${y + 10}" fill="none" stroke="${INK}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" class="tie"/>` + groundSign(gx, y + 10, 1, INK, 2));
+  }
+  const h = CFG.H, hasOut = new Set(edges.map(([a]) => a));
+  for (const n of nodes) {
+    if (n.type === 'junction') { o.push(`<circle cx="${n.x}" cy="${n.y}" r="3.5" fill="${INK}"/>`); continue; }
+    const st = hlOf(n) ? HL[hlOf(n)] : null;
+    const col = n.color ? COLORS[n.color] : null;
+    // A refused end wins over the branch highlight, and the highlight over a written color: the error is what
+    // needs fixing first, and the highlight is only on while typing.
+    const stroke = n.badEnd ? BAD : st ? st.stroke : col ? col.stroke : INK, sw = n.badEnd ? 3 : st ? st.w : 2;
+    const ink = col && !st && !n.badEnd ? col.stroke : INK;
+    const x0 = n.x - n.w / 2, y0 = n.y - h / 2;
+    // A written shape wins over the start/end look; wires meet every shape at its left and right middle.
+    const kind = n.shape ? (DRAW_AS[n.shape] || n.shape) : (n.role === 'start' ? 'pill' : n.role === 'end' ? 'flag' : 'rect');
+    const fill = st ? st.fill : col ? col.fill : (kind === 'pill' || kind === 'flag' ? START_FILL : '#fff');
+    if (interactive) o.push(`<g class="blk" data-ln="${n.ln}" data-idx="${n.idx}" style="cursor:pointer"><title>Click to change ${EE[n.shape] ? 'part' : 'shape'}</title>`);
+    if (EE[n.shape]) {
+      // the part's slot: as wide as the part along the path, as tall as a block across it (turned in top-down)
+      const bw = td ? h : n.w, bh = td ? n.w : h, bx = n.x - bw / 2, by = n.y - bh / 2;
+      // A part has no body to fill, so a highlight shows as a soft patch behind it; a color tints the lines only.
+      if (st) o.push(`<rect x="${bx}" y="${by}" width="${bw}" height="${bh}" rx="6" fill="${st.fill}"/>`);
+      // an invisible slot so a click anywhere on the part counts, not only on its thin lines
+      else if (interactive) o.push(`<rect x="${bx}" y="${by}" width="${bw}" height="${bh}" fill="#fff" fill-opacity="0"/>`);
+      // REV mirrors the symbol about its own center, which swaps + and −, turns the arrow and the diode around,
+      // and leaves the leads where the wires meet them. Top-down then turns it a quarter clockwise, so what ran
+      // left to right runs top to bottom.
+      // The ground sign always faces down (Josue, 11/25), so in top-down it is not turned with the other parts: the
+      // wire runs down the page and the bars sit under the point. When the path carries on, the sign hangs off a
+      // short stub to the right instead of sitting on the wire.
+      if (td && n.shape === 'GND') {
+        const top = n.y - n.w / 2, bot = n.y + n.w / 2, thru = hasOut.has(n.id), gx = thru ? n.x + 12 : n.x;
+        const ga = `fill="none" stroke="${stroke}" stroke-width="${sw}" stroke-linejoin="round" stroke-linecap="round"`;
+        o.push(`<path d="M${n.x} ${top} V${thru ? bot : n.y + 10}${thru ? ` M${n.x} ${n.y} H${gx} V${n.y + 10}` : ''}" ${ga}/>` + groundSign(gx, n.y + 10, 1, stroke, sw));
+      } else {
+        const sym = eeSymbolSVG(n.shape, x0, n.y, n.w, stroke, sw, hasOut.has(n.id));
+        const flat = n.rev ? `<g transform="matrix(-1 0 0 1 ${2 * n.x} 0)" class="rev">${sym}</g>` : sym;
+        o.push(td ? `<g transform="rotate(90 ${n.x} ${n.y})">${flat}</g>` : flat);
+      }
+      const beside = t => t.replace('text-anchor="middle"', 'text-anchor="start"');
+      if (td) {
+        if (SHOW_EE_NAME) o.push(beside(labelSVG(n.label, n.x + 20, n.value ? n.y - 8 : n.y, ink, 13)));
+        if (n.value) o.push(beside(valueSVG(n.value, n.x + 20, n.y + 9, ink)));
+      } else {
+        if (SHOW_EE_NAME) o.push(labelSVG(n.label, n.x, n.y - 24, ink, 13));
+        if (n.value) o.push(valueSVG(n.value, n.x, n.y + 25, ink));
+      }
+      if (n.meas) o.push(measSVG(n, x0, ink, td));
+      if (n.badEnd) o.push(`<path d="M${bx + 4} ${by + 4} L${bx + bw - 4} ${by + bh - 4} M${bx + bw - 4} ${by + 4} L${bx + 4} ${by + bh - 4}" stroke="${BAD}" stroke-width="3.5" stroke-linecap="round" class="badx"/>`);
+      if (interactive) o.push('</g>');
+      continue;
+    }
+    o.push(shapeSVG(kind, x0, y0, n.w, h, fill, stroke, sw));
+    // a triangle is heavier at its flat left side, so its text sits left of centre
+    const tx = kind === 'tri' ? x0 + n.w * 0.38 : n.x;
+    if (n.value) {
+      o.push(valueSVG(n.value, tx, n.y, ink));
+      o.push(labelSVG(n.label, x0 + 2, y0 - 6, ink, 12).replace('text-anchor="middle"', 'text-anchor="start"'));
+    } else o.push(labelSVG(n.label, tx, n.y, ink));
+    // Drawn over the label on purpose: the block must read as refused, not merely recolored.
+    if (n.badEnd) o.push(`<path d="M${x0 + 4} ${y0 + 4} L${x0 + n.w - 4} ${y0 + h - 4} M${x0 + n.w - 4} ${y0 + 4} L${x0 + 4} ${y0 + h - 4}" stroke="${BAD}" stroke-width="3.5" stroke-linecap="round" class="badx"/>`);
+    if (interactive) o.push('</g>');
+  }
+  o.push('</svg>');
+  return o.join('\n');
+}
+
+// Node-side check: edges by label so a person can compare them to the sketch without reading ids.
+function edgeList(model) {
+  const nm = n => n.type === 'junction' ? 'J' + n.id : n.label;
+  return model.edges.map(([a, b]) => nm(model.nodes[a]) + ' -> ' + nm(model.nodes[b]));
+}
+
+// ---- The canvas with several designs (V8, Josue 11/25) ------------------------------------------------------------
+// Each design is drawn by renderSVG as before and set inside a bordered frame; the frames stack downward in script
+// order, so a new design spawns directly below the one above. References (REF) are drawn over all of them as grey
+// dotted lines with a chain link in the middle, routed around every element so no line runs through a block or part.
+const SHEET = { PAD: 14, GAP: 30, MARGIN: 24, CELL: 10, CLEAR: 8 };
+const REF_INK = '#868e96';
+
+// The room an element takes up in its design, text around a part included, as [x0, y0, x1, y1].
+function elementBox(n, td) {
+  if (n.type === 'junction') return [n.x - 6, n.y - 6, n.x + 6, n.y + 6];
+  if (EE[n.shape]) {
+    const bw = td ? CFG.H : n.w, bh = td ? n.w : CFG.H;
+    // a part has its name above and value below (left to right), or a marker on one side and text on the other (top-down)
+    return td ? [n.x - bw / 2 - 40, n.y - bh / 2, n.x + bw / 2 + 70, n.y + bh / 2]
+      : [n.x - bw / 2, n.y - bh / 2 - 32, n.x + bw / 2, n.y + bh / 2 + 32];
+  }
+  return [n.x - n.w / 2, n.y - CFG.H / 2 - (n.value ? 16 : 0), n.x + n.w / 2, n.y + CFG.H / 2];
+}
+
+// Orthogonal route between two boxes on a grid: fewer turns, no cell inside any other box, and a small cost for
+// cells another reference already uses so parallel lines drift apart. Returns points in sheet coordinates or null.
+function routeAround(a, b, blocked, used, cols, rows, topBottomOnly) {
+  const C = SHEET.CELL;
+  const at = (x, y) => [Math.min(cols - 1, Math.max(0, Math.floor(x / C))), Math.min(rows - 1, Math.max(0, Math.floor(y / C)))];
+  const ctr = ([i, j]) => [i * C + C / 2, j * C + C / 2];
+  const DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]]; // up, right, down, left
+  // the cell beside each side of a box, the first free one found moving outward; dir is the way out
+  const ports = box => DIRS.map((d, k) => {
+    const mx = (box[0] + box[2]) / 2, my = (box[1] + box[3]) / 2;
+    for (let s = 1; s <= 4; s++) {
+      const x = k === 1 ? box[2] + s * C : k === 3 ? box[0] - s * C : mx, y = k === 0 ? box[1] - s * C : k === 2 ? box[3] + s * C : my;
+      if (x < 0 || y < 0) break;
+      const [i, j] = at(x, y);
+      if (!blocked[j * cols + i]) return { cell: [i, j], dir: k, box };
+    }
+    return null;
+  }).filter(Boolean).filter(p => !topBottomOnly || p.dir === 0 || p.dir === 2);
+  const starts = ports(a), goals = ports(b);
+  if (!starts.length || !goals.length) return null;
+  const goalSet = new Map(goals.map(g => [g.cell[1] * cols + g.cell[0], g]));
+  const h = (i, j) => Math.min(...goals.map(g => Math.abs(g.cell[0] - i) + Math.abs(g.cell[1] - j)));
+  const N = cols * rows * 4, best = new Float64Array(N).fill(Infinity), prev = new Int32Array(N).fill(-1);
+  const heap = []; // [f, state]
+  const push = (f, s) => {
+    heap.push([f, s]); let k = heap.length - 1;
+    while (k > 0) { const p = (k - 1) >> 1; if (heap[p][0] <= heap[k][0]) break; [heap[p], heap[k]] = [heap[k], heap[p]]; k = p; }
+  };
+  const pop = () => {
+    const top = heap[0], last = heap.pop();
+    if (heap.length) {
+      heap[0] = last; let k = 0;
+      for (;;) {
+        const l = 2 * k + 1, r = l + 1; let m = k;
+        if (l < heap.length && heap[l][0] < heap[m][0]) m = l;
+        if (r < heap.length && heap[r][0] < heap[m][0]) m = r;
+        if (m === k) break;
+        [heap[m], heap[k]] = [heap[k], heap[m]]; k = m;
+      }
+    }
+    return top;
+  };
+  for (const s of starts) { const st = (s.cell[1] * cols + s.cell[0]) * 4 + s.dir; best[st] = 0; push(h(...s.cell), st); }
+  let end = -1;
+  while (heap.length) {
+    const [, st] = pop(), cell = st >> 2, dir = st & 3, i = cell % cols, j = (cell - i) / cols;
+    if (goalSet.has(cell)) { end = st; break; }
+    for (let k = 0; k < 4; k++) {
+      if (k === (dir + 2) % 4) continue; // no turning straight back
+      const ni = i + DIRS[k][0], nj = j + DIRS[k][1];
+      if (ni < 0 || nj < 0 || ni >= cols || nj >= rows) continue;
+      const nc = nj * cols + ni;
+      if (blocked[nc]) continue;
+      const g = best[st] + 1 + (k === dir ? 0 : 5) + used[nc] * 3, ns = nc * 4 + k;
+      if (g < best[ns]) { best[ns] = g; prev[ns] = st; push(g + h(ni, nj), ns); }
+    }
+  }
+  if (end < 0) return null;
+  const cells = [];
+  for (let s = end; s >= 0; s = prev[s]) cells.push(s >> 2);
+  cells.reverse();
+  const g = goalSet.get(end >> 2), s0 = starts.find(s => s.cell[1] * cols + s.cell[0] === cells[0]);
+  const pts = cells.map(c => ctr([c % cols, (c - c % cols) / cols]));
+  // stubs from each box edge to its first and last cell, kept axis-aligned by taking the cell's own x or y
+  const edge = (port, p) => port.dir === 0 ? [p[0], port.box[1]] : port.dir === 2 ? [p[0], port.box[3]] : port.dir === 1 ? [port.box[2], p[1]] : [port.box[0], p[1]];
+  const all = [edge(s0, pts[0]), ...pts, edge(g, pts[pts.length - 1])];
+  for (const c of cells) used[c] += 1;
+  // drop points that sit on a straight run
+  return all.filter((p, k) => k === 0 || k === all.length - 1 || !((all[k - 1][0] === p[0] && p[0] === all[k + 1][0]) || (all[k - 1][1] === p[1] && p[1] === all[k + 1][1])));
+}
+
+// A small chain: two links crossing at an angle, on a white disc so the dotted line does not run through it.
+function chainSVG(x, y, tip) {
+  return `<g transform="translate(${x} ${y})" class="chain" style="pointer-events:all"><title>${esc(tip)}</title><circle r="11" fill="#fff"/>` +
+    `<g fill="none" stroke="${REF_INK}" stroke-width="1.9" transform="rotate(-45)"><rect x="-9" y="-3.6" width="10.5" height="7.2" rx="3.6"/><rect x="-1.5" y="-3.6" width="10.5" height="7.2" rx="3.6"/></g></g>`;
+}
+
+// hl is { design, lanes }: the branch highlight belongs to the one design the caret is in.
+function renderSheet(sheet, hl, interactive) {
+  const P = SHEET, frames = [];
+  let y = P.MARGIN, W = 0;
+  sheet.designs.forEach((m, i) => {
+    if (!m.nodes.length) return;
+    const svg = renderSVG(m, hl && hl.design === i && hl.lanes.size ? hl.lanes : undefined, interactive);
+    frames.push({ m, i, svg, x: P.MARGIN, y, w: m.width + 2 * P.PAD, h: m.height + 2 * P.PAD, ox: P.MARGIN + P.PAD, oy: y + P.PAD });
+    y += m.height + 2 * P.PAD + P.GAP; W = Math.max(W, m.width + 2 * P.PAD);
+  });
+  const width = Math.ceil(W + 2 * P.MARGIN), height = Math.ceil(y - P.GAP + P.MARGIN);
+  const o = [`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`, '<rect width="100%" height="100%" fill="#fff"/>'];
+  for (const f of frames) {
+    o.push(`<rect class="frame" x="${f.x}" y="${f.y}" width="${f.w}" height="${f.h}" rx="10" fill="#fff" stroke="#adb5bd" stroke-width="1.5"/>`);
+    o.push(f.svg.replace('<svg ', `<svg x="${f.ox}" y="${f.oy}" `));
+  }
+  // references: every element and every design title is an obstacle
+  const C = P.CELL, cols = Math.ceil(width / C), rows = Math.ceil(height / C);
+  const blocked = new Uint8Array(cols * rows), used = new Uint8Array(cols * rows), avoid = new Uint8Array(cols * rows);
+  const boxOf = new Map();
+  // a straight run marked into a grid, one cell either side as well
+  const mark = (grid, x0, y0, x1, y1, v) => {
+    const n = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0) / (C / 2)));
+    for (let k = 0; k <= n; k++) {
+      const ci = Math.floor((x0 + (x1 - x0) * k / n) / C), cj = Math.floor((y0 + (y1 - y0) * k / n) / C);
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+        const i = ci + di, j = cj + dj;
+        if (i >= 0 && j >= 0 && i < cols && j < rows) grid[j * cols + i] = Math.max(grid[j * cols + i], v);
+      }
+    }
+  };
+  const fill = (b, m) => {
+    for (let j = Math.max(0, Math.floor((b[1] - m) / C)); j <= Math.min(rows - 1, Math.floor((b[3] + m) / C)); j++)
+      for (let i = Math.max(0, Math.floor((b[0] - m) / C)); i <= Math.min(cols - 1, Math.floor((b[2] + m) / C)); i++) {
+        const cx = i * C + C / 2, cy = j * C + C / 2;
+        if (cx >= b[0] - m && cx <= b[2] + m && cy >= b[1] - m && cy <= b[3] + m) blocked[j * cols + i] = 1;
+      }
+  };
+  for (const f of frames) {
+    for (const n of f.m.nodes) {
+      const [a, b, c, d] = elementBox(n, f.m.td), box = [a + f.ox, b + f.oy, c + f.ox, d + f.oy];
+      boxOf.set(n, box); fill(box, P.CLEAR);
+    }
+    fill([f.ox + 10, f.oy + 8, f.ox + 24 + f.m.title.length * 9, f.oy + 34], 2);
+    // wires are not obstacles but cost extra to cross, and the chain never sits on one or on a frame border
+    const pt = f.m.td ? ([p, q]) => [q + f.ox, p + f.oy] : ([p, q]) => [p + f.ox, q + f.oy];
+    for (const [a, b] of f.m.edges) {
+      const pts = wirePoints(f.m.nodes[a], f.m.nodes[b]).map(pt);
+      for (let k = 1; k < pts.length; k++) { mark(used, ...pts[k - 1], ...pts[k], 1); mark(avoid, ...pts[k - 1], ...pts[k], 1); }
+    }
+    for (const [x0, y0, x1, y1] of [[f.x, f.y, f.x + f.w, f.y], [f.x + f.w, f.y, f.x + f.w, f.y + f.h], [f.x, f.y + f.h, f.x + f.w, f.y + f.h], [f.x, f.y, f.x, f.y + f.h]]) mark(avoid, x0, y0, x1, y1, 1);
+  }
+  const routes = [], refSVG = [];
+  for (const r of sheet.refs) {
+    const a = boxOf.get(r.from), b = boxOf.get(r.to);
+    if (!a || !b) continue;
+    // wires meet an element at its left and right, so a reference leaves at the top or bottom when it can, and only
+    // then tries the sides
+    let pts = routeAround(a, b, blocked, used, cols, rows, true) || routeAround(a, b, blocked, used, cols, rows, false);
+    if (!pts) pts = [[(a[0] + a[2]) / 2, (a[1] + a[3]) / 2], [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2]]; // boxed in: a straight line beats none
+    const name = (n, di) => sheet.designs[di].title + '.' + n.label;
+    routes.push({ ref: r, pts });
+    refSVG.push(`<path class="ref" d="M${pts.map(p => p.join(' ')).join(' L')}" fill="none" stroke="${REF_INK}" stroke-width="1.8" stroke-dasharray="1.5 6" stroke-linecap="round" stroke-linejoin="round"/>`);
+    // the chain sits halfway along the line, slid along it to the nearest spot clear of wires, borders and elements
+    const len = pts.slice(1).map((p, k) => Math.hypot(p[0] - pts[k][0], p[1] - pts[k][1])), total = len.reduce((s, v) => s + v, 0);
+    const along = d => {
+      let run = Math.min(total, Math.max(0, d)), k = 0;
+      while (k < len.length - 1 && run > len[k]) { run -= len[k]; k++; }
+      const t = len[k] ? run / len[k] : 0;
+      return [Math.round(pts[k][0] + (pts[k + 1][0] - pts[k][0]) * t), Math.round(pts[k][1] + (pts[k + 1][1] - pts[k][1]) * t)];
+    };
+    const clear = ([x, y]) => [[0, 0], [13, 0], [-13, 0], [0, 13], [0, -13], [9, 9], [-9, 9], [9, -9], [-9, -9]].every(([dx, dy]) => {
+      const i = Math.floor((x + dx) / C), j = Math.floor((y + dy) / C);
+      return i < 0 || j < 0 || i >= cols || j >= rows || (!avoid[j * cols + i] && !blocked[j * cols + i]);
+    });
+    let spot = along(total / 2);
+    for (let off = 0; off <= total / 2; off += 5) {
+      const a1 = along(total / 2 + off), a2 = along(total / 2 - off);
+      if (clear(a1)) { spot = a1; break; }
+      if (clear(a2)) { spot = a2; break; }
+    }
+    refSVG.push(chainSVG(spot[0], spot[1], name(r.from, r.fromDesign) + ' refers to ' + name(r.to, r.toDesign)));
+  }
+  sheet.routes = routes;
+  if (refSVG.length) o.push(`<g class="refs" style="pointer-events:none">${refSVG.join('')}</g>`);
+  o.push('</svg>');
+  return o.join('\n');
+}
+// ==CORE-END==
+
+// The key that types * and \. The apostrophe replaced the period (Josue, 11/24) so a period types normally,
+// as in 4.7k; he may try other keys, so it lives in this one constant and the legend reads it.
+const HOTKEY = "'";
+// What the hotkey types after the text `before` on its line: the closing backslash inside an open element list,
+// nothing special inside an open [ ] value (so "don't" can be typed there), the opening asterisk otherwise.
+function hotkeyText(before) {
+  if (/^\s*\*[^\\]*$/.test(before)) return '\\';
+  let depth = 0;
+  if (before.includes('\\')) for (const ch of before.slice(before.indexOf('\\') + 1)) {
+    if (ch === '[') depth++; else if (ch === ']' && depth > 0) depth--;
+  }
+  return depth > 0 ? HOTKEY : '*';
+}
+
+if (typeof document !== 'undefined') {
+  const src = document.getElementById('src'), out = document.getElementById('out'), msgs = document.getElementById('msgs');
+  const bd = document.getElementById('bd'), bdIn = document.getElementById('bdIn');
+  let lastSVG = '';
+  const caretLine = () => src.value.slice(0, src.selectionStart).split('\n').length;
+  const cur = document.getElementById('cur'), waitsEl = document.getElementById('waits');
+
+  // The box mirrors the caret line (tabs hidden) unless the person is typing in it, and the chips list every
+  // wait still open, so the diagram can be watched with the script panel collapsed.
+  function syncBar(text) {
+    const ln = caretLine();
+    // Until a valid name line exists the box asks for the name, since nothing else is accepted yet.
+    const tl = text.split('\n'), dsg = designAt(tl, ln), first = dsg ? tl[dsg.start - 1] : undefined;
+    cur.placeholder = first && /^\s*\*\s*[^,\\*]+\\\s*$/.test(first) ? '*A, B\\ branch wait' : '*Name\\   (name the schematic first)';
+    if (document.activeElement !== cur) cur.value = (text.split('\n')[ln - 1] || '').trimStart();
+    const w = openWaits(text, ln);
+    waitsEl.innerHTML = w.length
+      ? 'Open waits: ' + w.map(x => `<span class="chip${x.innermost ? ' in' : ''}" title="line ${x.ln}">wait: ${esc(x.text || 'line ' + x.ln)}</span>`).join('')
+      : 'No open waits';
+  }
+  function applyBar(r) {
+    src.value = r.text; src.setSelectionRange(r.caret, r.caret);
+    if (cur.value !== r.line) cur.value = r.line;
+    cur.setSelectionRange(r.barCaret, r.barCaret);
+    update();
+  }
+  // curJust and srcJust: the last keystroke wrote a shorthand letter out as a word (see backspaceWord).
+  let curJust = false, srcJust = false;
+  const isModifier = k => k === 'Shift' || k === 'Control' || k === 'Alt' || k === 'Meta';
+  cur.addEventListener('input', e => {
+    let v = cur.value, vc = cur.selectionStart;
+    const x = e.inputType === 'insertText' ? expandAtCaret(v, vc, !startsDesign(src.value.split('\n'), caretLine())) : null;
+    if (x) { v = x.text; vc = x.caret; }
+    else if (e.inputType === 'insertText') v = capsAtCaret(v, vc) || v;
+    curJust = !!(x && x.undoable);
+    applyBar(barEdit(src.value, caretLine(), v, vc));
+  });
+  cur.addEventListener('keydown', e => {
+    if (!isModifier(e.key) && e.key !== 'Backspace') curJust = false;
+    if (e.key === 'Backspace' && !e.ctrlKey && !e.altKey && !e.metaKey && cur.selectionStart === cur.selectionEnd) {
+      const r = backspaceWord(cur.value, cur.selectionStart, curJust);
+      curJust = false;
+      if (r) { e.preventDefault(); applyBar(barEdit(src.value, caretLine(), cur.value.slice(0, r.from) + cur.value.slice(r.to), r.from)); return; }
+    }
+    // Same hotkey as the script editor.
+    if (e.key === HOTKEY && !e.ctrlKey && !e.metaKey && !e.altKey && cur.selectionStart === cur.selectionEnd) {
+      e.preventDefault();
+      document.execCommand('insertText', false, hotkeyText(cur.value.slice(0, cur.selectionStart)));
+    } else if (e.key === 'Enter') {
+      // Enter at the end of the box closes the list or starts the next line, as in the script (see enterAt);
+      // Shift+Enter, or Enter with the caret inside the line, only opens a new line under it
+      e.preventDefault();
+      const ln = caretLine(), lines = src.value.split('\n');
+      let r = null;
+      if (!e.shiftKey && cur.selectionStart === cur.value.length) r = enterAt(src.value, lines.slice(0, ln).join('\n').length);
+      applyBar(r || barEnter(src.value, ln));
+    } else if (e.key === 'Backspace' && cur.value === '' && cur.selectionStart === 0) {
+      const r = barBack(src.value, caretLine());
+      if (r) { e.preventDefault(); applyBar(r); }
+    } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      // step the box to the neighbouring script line
+      const lines = src.value.split('\n'), ln = caretLine() + (e.key === 'ArrowUp' ? -1 : 1);
+      if (ln < 1 || ln > lines.length) return;
+      e.preventDefault();
+      let pos = 0; for (let i = 0; i < ln - 1; i++) pos += lines[i].length + 1;
+      pos += lines[ln - 1].length; src.setSelectionRange(pos, pos);
+      cur.value = lines[ln - 1].trimStart(); cur.setSelectionRange(cur.value.length, cur.value.length);
+      update();
+    }
+  });
+  ['focus', 'blur'].forEach(ev => cur.addEventListener(ev, update));
+
+  function update() {
+    const text = src.value;
+    const model = parseSheet(text);
+    msgs.innerHTML = model.errors.map(e => `<div class="err">${esc(e)}</div>`).join('') +
+                     model.warnings.map(e => `<div class="warn">${esc(e)}</div>`).join('');
+    // The highlight only shows while the editor has focus; leaving it clears the colors.
+    const working = document.activeElement === src || document.activeElement === cur;
+    const hl = working ? highlightAt(text, caretLine()) : { lanes: new Map(), lines: new Map(), wait: null };
+    syncBar(text);
+    // A refused end is marked whether or not the editor has focus: it is an error, not a typing aid.
+    const bad = new Set(model.badEnds);
+    bdIn.innerHTML = text.split('\n').map((l, i) => {
+      const marks = [];
+      if (hl.wait && hl.wait.ln === i + 1) marks.push(hl.wait);
+      if (bad.has(i + 1)) { const r = endWordRange(l); if (r) marks.push(r); }
+      marks.sort((a, b) => a.from - b.from);
+      let body = '', at = 0;
+      for (const r of marks) {
+        if (r.from < at) continue;
+        body += esc(l.slice(at, r.from)) + '<span class="wb">' + esc(l.slice(r.from, r.to)) + '</span>';
+        at = r.to;
+      }
+      body += esc(l.slice(at));
+      return `<div class="bl ${hl.lines.get(i + 1) || ''}">${body || '&#8203;'}</div>`;
+    }).join('');
+    syncScroll();
+    // Errors are also shown in the bottom bar and here, so they are seen with the script panel collapsed.
+    const errsEl = document.getElementById('errs');
+    errsEl.textContent = model.errors.length ? model.errors[0] + (model.errors.length > 1 ? ` (and ${model.errors.length - 1} more)` : '') : '';
+    if (!model.nodes.length) {
+      out.innerHTML = model.errors.length
+        ? `<div class="empty err">${esc(model.errors[0])}</div>`
+        : '<div class="empty">Nothing to draw yet. Start by naming the schematic: press Enter (or the apostrophe key), type a name, then press it again (for example *Schematic\\).</div>';
+      lastSVG = ''; return;
+    }
+    lastSVG = renderSheet(model); // clean copy for downloads: no click targets, no highlight, not zoomed
+    const tl = text.split('\n'), dsg = designAt(tl, caretLine());
+    out.innerHTML = renderSheet(model, { design: dsg ? model.designs.findIndex(d => d.span.start === dsg.start) : -1, lanes: hl.lanes }, true);
+    applyZoom();
+    try { localStorage.setItem('shorthand_schematic_v8_src', text); } catch (e) {}
+  }
+  function syncScroll() { bdIn.style.transform = `translate(${-src.scrollLeft}px, ${-src.scrollTop}px)`; }
+  function download(name, blob) {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+  // Assigning .value wipes the browser's undo stack, so automatic edits go in as a typed replacement of only
+  // the changed span (execCommand), which keeps Ctrl+Z working through auto-tabbing and return conversion.
+  let applying = false;
+  function setText(t, c) {
+    const old = src.value;
+    if (t !== old) {
+      let a = 0;
+      while (a < old.length && a < t.length && old[a] === t[a]) a++;
+      let b = 0;
+      while (b < old.length - a && b < t.length - a && old[old.length - 1 - b] === t[t.length - 1 - b]) b++;
+      src.setSelectionRange(a, old.length - b);
+      applying = true;
+      const rep = t.slice(a, t.length - b);
+      const done = rep ? document.execCommand('insertText', false, rep) : document.execCommand('delete');
+      applying = false;
+      if (!done || src.value !== t) src.value = t; // fallback if the browser refuses the command
+    }
+    src.setSelectionRange(c, c);
+  }
+
+  src.addEventListener('input', e => {
+    if (applying) return;
+    let t = src.value, c = src.selectionStart;
+    // only a typed character or Enter writes a letter out; a paste keeps the script exactly as pasted
+    const x = (e.inputType === 'insertText' || e.inputType === 'insertLineBreak') ? expandAtCaret(t, c) : null;
+    if (x) { t = x.text; c = x.caret; }
+    else if (e.inputType === 'insertText') t = capsAtCaret(t, c) || t;
+    srcJust = !!(x && x.undoable);
+    const r = convertReturnDigits(t, c); t = r.text; c = r.caret;
+    const sp = splitSequences(t, c), split = sp.text !== t; t = sp.text; c = sp.caret;
+    const before = t.slice(0, c).split('\n').pop();
+    // Re-tab when Enter is pressed, when the closing period of an element list is typed, and whenever a
+    // command word has just been completed.
+    if (split || e.inputType === 'insertLineBreak' || e.inputType === 'insertFromPaste' || e.inputType === 'insertFromDrop' || /^\s*\*[^\\]*\\$/.test(before) || /(^|[^\w^])(branch|wait|return(\^\d+)?)\s*$/i.test(before) || /(^|[^\w^])[bwr]\^?\d*\s*$/.test(before)) {
+      const q = reindentWithCaret(t, c); t = q.text; c = q.caret;
+    }
+    setText(t, c);
+    update();
+  });
+  // The hotkey: inside an open element list it types the closing backslash, anywhere else it types the
+  // opening asterisk (which then starts a new line if it follows a finished list).
+  src.addEventListener('keydown', e => {
+    if (!isModifier(e.key) && e.key !== 'Backspace') srcJust = false;
+    if (e.key === 'Backspace' && !e.ctrlKey && !e.altKey && !e.metaKey && src.selectionStart === src.selectionEnd) {
+      const r = backspaceWord(src.value, src.selectionStart, srcJust);
+      srcJust = false;
+      // the word goes as one typed deletion, so Ctrl+Z brings it back
+      if (r) { e.preventDefault(); src.setSelectionRange(r.from, r.to); document.execCommand('delete'); return; }
+    }
+    // Enter closes an open list or starts the next line (enterAt); Shift+Enter stays a plain line break
+    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && src.selectionStart === src.selectionEnd) {
+      const r = enterAt(src.value, src.selectionStart);
+      if (r) { e.preventDefault(); setText(r.text, r.caret); update(); return; }
+    }
+    if (e.key === HOTKEY && !e.ctrlKey && !e.metaKey && !e.altKey && src.selectionStart === src.selectionEnd) {
+      const before = src.value.slice(0, src.selectionStart).split('\n').pop();
+      e.preventDefault();
+      document.execCommand('insertText', false, hotkeyText(before));
+      return;
+    }
+    if (e.key === 'Tab') { e.preventDefault(); document.execCommand('insertText', false, '   '); }
+  });
+  // Legend. The shorthand rows are read from SHORT so they cannot drift from what the parser accepts.
+  const helpDlg = document.getElementById('helpDlg');
+  const swatch = (inner, w) => `<svg width="${w || 56}" height="26" viewBox="0 0 ${w || 56} 26" aria-hidden="true">${inner}</svg>`;
+  const box = (extra, label) => `<rect x="3" y="3" width="50" height="20" ${extra} stroke-width="2"/><text x="28" y="18" text-anchor="middle" font-size="12" font-family="system-ui,sans-serif" fill="${INK}">${label}</text>`;
+  const row = (a, b) => `<tr><td>${a}</td><td>${b}</td></tr>`;
+  const code = t => `<code>${esc(t)}</code>`;
+  // a two-cell row inside a three-column table spans the last two columns
+  const wide = (a, b) => `<tr><td>${a}</td><td colspan="2">${b}</td></tr>`;
+  // Shorthand letter for a command word, read from SHORT so the legend follows the table.
+  const sh = w => Object.keys(SHORT).find(k => SHORT[k] === w);
+  const shLetter = v => Object.keys(SHAPE_WORDS).find(k => k.length === 1 && SHAPE_WORDS[k] === v);
+  const miniShape = kind => swatch(shapeSVG(kind, 6, 3, 44, 20, kind === 'pill' || kind === 'flag' ? START_FILL : '#fff', INK, 2), 56);
+  const letterCell = w => shLetter(w) ? code(shLetter(w)) : '&mdash;';
+  const shapeRows = [['tri', 'tri', 'Triangle'], ['circ', 'circ', 'Circle'], ['dia', 'dia', 'Diamond (plain)'],
+    ['proc', 'rect', 'Process block'], ['dec', 'dia', 'Decision: a diamond that shows its value; a branch leaving it is labeled no, the path that carries on yes'],
+    ['io', 'io', 'Input or output (parallelogram)']]
+    .map(([w, k, name]) => `<tr><td>${code(w)}</td><td>${letterCell(w)}</td><td>${miniShape(k)} ${name}</td></tr>`).join('') +
+    `<tr><td>${code('auto')}</td><td>&mdash;</td><td>${miniShape('pill')} ${miniShape('flag')} Default: pill for the start, flag for the end, box otherwise. There is no rect word: a box is the default, and <code>RECT</code> is a <code>MEAS</code> form</td></tr>`;
+  const cmdRow = (cmd, short, text) => `<tr><td>${code(cmd)}</td><td>${short}</td><td>${text}</td></tr>`;
+  document.getElementById('helpBody').innerHTML =
+    '<h3>Typing</h3><table>' +
+    row(code('Enter'), 'Does the hotkey\'s job at the end of a line: on a line whose list is still open it types <code>\\</code> (and a space, ready for the specifier); on a line that is closed it starts the next line with its <code>*</code> already typed. So a whole line is: the names, Enter, the specifier, Enter. On the name line Enter closes it and goes straight on; on a bare <code>*</code> it closes the diagram (<code>*\\</code>). In the middle of a line, inside an open <code>[ ]</code> value, or with Shift held, Enter is a plain line break.') +
+    row(code(HOTKEY), 'Hotkey: types <code>*</code> to open an element list, and <code>\\</code> to close an open one. Inside a bracketed value it types itself. You can type <code>*</code> and <code>\\</code> yourself instead. A period types normally.') +
+    row(code('*S, A\\ specifier'), 'One line: the elements in series, then the specifier.') +
+    row('Specifier', 'Everything after the closing <code>\\</code>. It specifies each element (shape, color, value) and then how the line behaves (<code>branch</code>, <code>wait</code>, <code>return</code>, <code>end</code>): the element is worked on before its location.') +
+    row('Groups', 'Semicolons split the specifier into groups, one property type each; inside a group the commas give one entry per element, in the order of the names. <code>*A, B\\ proc, dec; red, blue</code> makes A a red process block and B a blue decision. Group order does not matter and the last group needs no semicolon. The v4 form <code>*A, B\\ tri, circ, branch wait</code> still works.') +
+    row('Values', 'Text after <code>=</code>, shown inside the block with the name small above it: <code>*P1\\ proc = load data</code>. Several elements: <code>*A, B\\ proc = read, dec = x &gt; 10</code>. A value with commas or semicolons goes in square brackets: <code>dec = [x &gt; 10, y &lt; 3]</code>.') +
+    row('Colors', '<code>red</code> <code>orange</code> <code>yellow</code> <code>green</code> <code>blue</code> <code>purple</code> <code>pink</code> <code>gray</code> <code>black</code>: a light fill with the outline and text in that color. Can share an entry with a shape: <code>dec red = x &gt; 10</code>.') +
+    row('Start', 'The first element is always the start; there is no start word.') +
+    row(code('*Name\\'), 'First line, required before anything else: the diagram name, on its own (no commas, no commands). Elements such as <code>*A, B\\</code> on the first line are an error and nothing is drawn. The last line <code>*\\</code> ends the design. Another name line after it starts the next design, drawn in its own border directly below.') +
+    row('Designs', 'Each design runs from its name line to its closing <code>*\\</code>. Press Enter on a closing <code>*\\</code> to start the next one: it spawns directly below the one above, in its own border.') +
+    row('REF', 'Links an element to another one: <code>*A, B\\ PROC, PROC; REF = X2, </code> points A at X2. The name is looked up in the same design first, then in the others; <code>REF = Design.X2</code> names the design, like a member in C. Several go in brackets, <code>REF = [X2, Other.Y]</code>. A link is drawn as a grey dotted line with a chain in the middle that goes around the elements.') +
+    row('Ends', 'A branch that does not return must finish with <code>END</code>, so a simulation has somewhere to stop: <code>*B1\\ PROC, END; BRANCH</code>, or write <code>RETURN</code> to rejoin. Circuits are exempt.') +
+    row('One line', 'Each <code>*</code> after a finished list starts a new line, tabbed automatically. Typed spaces are ignored.') +
+    row('Letters to words', 'A small shorthand letter in the specifier is written out in capitals as soon as you type a space, comma or semicolon after it (or press Enter, or start the next list): <code>s</code> becomes <code>SERIES</code>, <code>t</code> becomes <code>TRI</code>, <code>r2</code> becomes <code>RETURN^2</code>. Backspace right after it takes the whole word back; Backspace at the end of any such word deletes the whole word. Part codes are written out too: <code>R</code> becomes <code>RES</code>, <code>VS</code> (or <code>vs</code>) becomes <code>VOLT_SRC</code> (see Circuit parts), and <code>m</code> becomes <code>MEAS</code>. Letters in element names and in values are left alone. A pasted script is kept as pasted.') +
+    '</table><h3>Current line box and script panel</h3><table>' +
+    row('Current line', 'The box at the bottom edits the current script line (same hotkey and clean-up as the script). Enter at the end of the box works as in the script (closes the list, or starts the next line with <code>*</code>); Shift+Enter starts a new line, Backspace on an empty box goes back a line, Up and Down move between lines.') +
+    row('Open waits', 'Red chips beside the box list every wait still open (the innermost is darker), so you can watch the diagram with the script hidden.') +
+    row('Script panel border', 'Drag the border to resize the panel (double-click resets it; with the border focused, the arrow keys also resize). The arrow button at the top of the border hides and shows the panel.') +
+    '</table><h3>Behavior commands and shorthand (tentative), written in the specifier after the shapes</h3><table>' +
+    '<tr><th>Command</th><th>Shorthand</th><th>Meaning</th></tr>' +
+    cmdRow('series', code(sh('series')), 'Optional label: lines are in series by default.') +
+    cmdRow('branch', code(sh('branch')), 'Elements leave the path and end there, with no return.') +
+    cmdRow('branch wait', code(sh('branch') + ' ' + sh('wait')), 'The branch stays open; the lines after it continue it in series.') +
+    cmdRow('return', code(sh('return')), 'Closes the open branch; it rejoins one level up.') +
+    cmdRow('return^2', code(sh('return') + '2'), 'Rejoins two levels up. Typing <code>return2</code> becomes <code>return^2</code>; <code>r2</code> becomes <code>RETURN^2</code>.') +
+    cmdRow('branch return', code(sh('branch') + ' ' + sh('return')), 'A closed branch whose return is pending.') +
+    cmdRow('end', '&mdash;', 'Marks the last element of the line as the end (spelled out: <code>e</code> is kept for powers in values). It must be the last element of its path: an end with anything after it, or written while a branch is waiting on its return, turns red, gets a red X and an error says why.') +
+    '</table><h3>Shapes and flow blocks (tentative): one per element in order, before the behavior</h3><table>' +
+    '<tr><th>Command</th><th>Shorthand</th><th>Shape</th></tr>' +
+    shapeRows +
+    '</table><p>Example: <code>*A, B\\ tri, circ, branch wait</code> makes A a triangle and B a circle, then the line branches and waits. The shapes come before the behavior. You can also click a block in the diagram to step through the shapes; the words are written into the script for you.</p>' +
+    '<h3>Circuit parts: drawn on the wire, in the same diagram as the blocks</h3><table>' +
+    '<tr><th>Code</th><th>Word</th><th>Part, and the unit its value is read in</th></tr>' +
+    // the word column is held narrow so the symbol and its description get the room
+    // the word column is what the typing aid writes the code out as
+    Object.keys(EE).map(k => `<tr><td>${code(k)}</td><td style="width:1%">${code(CODE_WORDS[k])}</td><td>${swatch(eeSymbolSVG(k, 2, 13, 60, INK, 2), 64)} ${{ R: 'Resistor, ohms (Ω)', C: 'Capacitor, farads (F)', L: 'Inductor, henries (H)', VS: 'Voltage source, volts (V); − on the left, + on the right', IS: 'Current source, amps (A); the arrow points along the path, left to right', DVS: 'Dependent voltage source, volts (V); an expression is shown as typed, in brackets when it has * (DVS = [2*Vx]), since a * otherwise starts a new line', DIS: 'Dependent current source, amps (A); an expression is shown as typed, in brackets when it has * (DIS = [0.5*Ix])', D: 'Diode, anode on the left; no unit, the value is shown as typed', VAC: 'AC voltage source, volts (V): amplitude, omega in rad/s and angle in degrees, as <code>5 cos(377t + 30)</code> or <code>[5, 377, 30]</code> (<code>sin</code> also works); − and + as on <code>VS</code>', IAC: 'AC current source, amps (A), written like <code>VAC</code>: <code>2m cos(1000t)</code>; the arrow points along the path', GND: 'Ground: ties this point to ground; the wire carries on only when something follows it' }[k]}</td></tr>`).join('') +
+    wide('Values', '<code>*R1\\ R = 4.7k</code> shows 4.7 kΩ under the resistor; <code>*C1\\ C = 10u</code> shows 10 µF. The unit may be typed too: <code>4.7kΩ</code>, <code>4.7k ohm</code>, <code>10uF</code>. A power works: <code>4.7e3</code> shows 4.7 kΩ. Without <code>=</code> the part is drawn with no value. A value that is not a number is shown as typed.') +
+    wide('Prefixes', '<code>p</code> pico, <code>n</code> nano, <code>u</code> or <code>µ</code> micro, <code>m</code> milli, <code>k</code> kilo, <code>M</code> mega, <code>G</code> giga.') +
+    wide('Direction', 'Parts with a direction (<code>VS</code> <code>IS</code> <code>DVS</code> <code>DIS</code> <code>VAC</code> <code>IAC</code> <code>D</code>) are drawn negative to positive along the path, so current flows left to right. Write <code>REV</code> in the entry of a part to reverse it: <code>*V1\\ VS REV = 5</code> is a 5 V source drawn positive to negative. On other parts <code>REV</code> is ignored with a warning.') +
+    wide('Measure', 'Write <code>MEAS V</code> (shorthand <code>m</code>) in the entry of a part to mark the voltage across it, <code>MEAS I</code> for the current through it; <code>MEAS</code> alone means V. <code>*R_1\\ RES = 4.7k; MEAS V</code> draws <code>+ V &minus;</code> over the resistor, + where the current enters (left, or right on a part marked <code>REV</code>); <code>MEAS I</code> draws an arrow the way the current flows. The solver fills in the number (see Simulation); an AC reading takes a form after <code>MEAS</code>: <code>POLE</code>, <code>RECT</code> or <code>SINE</code> (see AC). A source cannot measure its own quantity (no <code>MEAS V</code> on a voltage source, no <code>MEAS I</code> on a current source): that is an error. On a flow block <code>MEAS</code> is ignored with a warning.') +
+    wide('Ground and checks', 'Nothing is grounded unless you write it: put <code>GND</code> where 0 V is, one <code>GND</code> first or last on the path is enough, because it joins both ends of the circuit (<code>*V1, R1, GND\\ VS = 5, RES = 1k, GND; MEAS I,</code>); a <code>GND</code> in the middle is only a reference point, and two or more are written out where you want them. Entries and elements pair up one to one in a group: more entries than elements is an error, fewer a warning (<code>NULL</code> or a bare comma skips one on purpose). Entries need not be the same kind, and <code>END</code> pairs up like the rest: <code>*DONE, OFF\\ PINK, BLACK; NULL, END</code> ends OFF. Brackets hold several specifiers for one element: <code>[BLUE, PROC = cool down]</code>. A circuit with <code>MEAS</code> and no <code>GND</code> is an error. Before solving, the circuit is checked: errors (red X on the parts, no readings) for a loop of only voltage sources and inductors, a node touching only current sources, a repeated part name, and a measured part on a dead-end branch; warnings (amber, still solved) for an open end, a part with both ends on the same node, a group not connected to <code>GND</code>, and more than two <code>GND</code> points.') +
+    wide('Simulation', 'When a part has <code>MEAS</code>, the circuit is solved for DC and the marker shows the reading, for example <code>+ 5 V &minus;</code>. CAP is open and IND is a short in DC; DIODE follows the Shockley equation. A dependent source takes <code>[gain*V(name)]</code> or <code>[gain*I(name)]</code> of another part, read the way <code>MEAS</code> reads it. Every part needs a number as its value (a diode needs none). If the circuit cannot be solved, a note under the script says why and the markers keep their quantity only.') +
+    wide('AC', 'With <code>VAC</code> or <code>IAC</code> sources the circuit is solved in phasors: CAP is jωC, IND is jωL. Each source keeps its own omega; the circuit is solved once per omega (and once for DC) with the other sources switched off, and the readings add up (superposition). Each marker writes its reading in the form named after <code>MEAS</code>: <code>POLE</code> <code>7.07 V ∠ −45°</code>, <code>RECT</code> <code>5 − j5 V</code> or <code>SINE</code> <code>7.07 cos(1000t − 45°) V</code>, as in <code>MEAS V RECT</code> (polar when none is given; a DC reading is a plain number in every form); a sum names each omega, as in <code>2 V + 3 V ∠ 0° @ 1000 rad/s</code>. A diode with AC sources needs a time simulation, which comes later, so that circuit is not solved.') +
+    wide('Several parts','<code>*R1, C1\\ R = 4.7k, C = 10u; red, blue</code>: one entry per part, as for blocks.') +
+    wide('Letter case', 'Single letters are case-sensitive: capitals are circuit parts (<code>R C L D</code>), small letters are shapes and commands (<code>c</code> circle, <code>d</code> decision, <code>r</code> return). So <code>C</code> is a capacitor and <code>c</code> a circle. Codes and words longer than one letter match in any case (<code>VS</code> or <code>vs</code>, <code>Branch</code>, <code>PROC</code>, <code>Resistor</code>).') +
+    wide('Click a part', `Steps through the parts (${Object.keys(EE).join(', ')}) and writes the code into the script; the value is kept.`) +
+    '</table>' +
+    '<h3>Diagram</h3><table>' +
+    row('<code>&minus;</code> <code>+</code>', 'Zoom out and in. The mouse wheel zooms around the pointer. The canvas is an endless white plane: drag anywhere on it to move the drawing as far as you like. The percent button fits and centers the whole drawing; press it again for 100% at the start corner. Downloads are not affected by zoom or position.') +
+    row('&darr; &rarr;', 'The arrow button beside the zoom buttons switches the drawing between left to right and top to bottom (also in Settings). Top to bottom keeps blocks upright, turns circuit parts to run down the page with their name and value beside them, and puts branches in columns to the right.') +
+    row('Click a block', 'Steps through its shapes and writes the word into the script (a drag never counts as a click).') +
+    '</table><h3>Rejoining</h3><p>A pending return rejoins after the last element of the next line on its target level. When several are pending for the same level, they rejoin in the order the branches were created.</p>' +
+    '<h3>Drawing</h3><table>' +
+    row(swatch(`<rect x="3" y="3" width="50" height="20" rx="10" fill="${START_FILL}" stroke="${INK}" stroke-width="2"/><text x="28" y="18" text-anchor="middle" font-size="12" font-family="system-ui,sans-serif" fill="${INK}">S</text>`), 'Start: the first element.') +
+    row(swatch(box('rx="3" fill="#fff" stroke="' + INK + '"', 'A')), 'Element in series.') +
+    row(swatch(`<polygon points="3,3 53,3 53,13 43,23 3,23" fill="${START_FILL}" stroke="${INK}" stroke-width="2"/><text x="26" y="18" text-anchor="middle" font-size="12" font-family="system-ui,sans-serif" fill="${INK}">E</text>`), 'End: the line marked <code>end</code>.') +
+    row(swatch(`<circle cx="28" cy="13" r="3.5" fill="${INK}"/>`), 'Junction where a branch leaves or rejoins.') +
+    '</table><h3>Highlights while you type</h3><table>' +
+    row(swatch(box(`rx="3" fill="${HL.strong.fill}" stroke="${HL.strong.stroke}"`, 'A')), 'Orange: the branch the current line closes or resolves (the oldest-created one).') +
+    row(swatch(box(`rx="3" fill="${HL.weak.fill}" stroke="${HL.weak.stroke}"`, 'A')), 'Light orange: other branches still waiting for a return or a rejoin.') +
+    row('<span style="background:rgba(229,56,59,.4);border-radius:8px;box-shadow:0 0 0 2px rgba(229,56,59,.4)">wait</span>', 'Red bubble: this branch is waiting for its return. Shown while you work on its level; hidden when you branch off from inside it and cleared once <code>return</code> is written.') +
+    '</table>';
+  // Settings page: the choices live in SETTINGS (read by the core), are saved per browser, and redraw at once.
+  const setDlg = document.getElementById('setDlg'), setForm = document.getElementById('setForm');
+  // only known keys are restored, so the AC form an earlier build saved does not come back as a stray setting
+  try { const saved = JSON.parse(localStorage.getItem('shorthand_schematic_v8_settings') || '{}'); for (const k of Object.keys(SETTINGS)) if (k in saved) SETTINGS[k] = saved[k]; } catch (e) {}
+  for (const k of Object.keys(SETTINGS)) {
+    const r = setForm.querySelector(`input[name="${k}"][value="${SETTINGS[k]}"]`);
+    if (r) r.checked = true;
+  }
+  // The direction lives in two places, the Settings page and the arrow button by the zoom buttons; both write the
+  // same setting, and the button shows the direction a press switches to.
+  const dirBtn = document.getElementById('dirBtn');
+  function syncDir() {
+    const td = SETTINGS.direction === 'td', label = td ? 'Draw left to right' : 'Draw top to bottom';
+    dirBtn.innerHTML = td ? '&rarr;' : '&darr;'; dirBtn.title = label; dirBtn.setAttribute('aria-label', label);
+    const r = setForm.querySelector(`input[name="direction"][value="${SETTINGS.direction}"]`);
+    if (r) r.checked = true;
+  }
+  function saveSettings() { try { localStorage.setItem('shorthand_schematic_v8_settings', JSON.stringify(SETTINGS)); } catch (err) {} }
+  setForm.addEventListener('change', e => {
+    if (!(e.target.name in SETTINGS)) return;
+    SETTINGS[e.target.name] = e.target.value;
+    saveSettings(); syncDir(); update();
+  });
+  dirBtn.onclick = () => { SETTINGS.direction = SETTINGS.direction === 'td' ? 'lr' : 'td'; saveSettings(); syncDir(); update(); };
+  syncDir();
+  document.getElementById('settings').onclick = () => setDlg.showModal();
+  document.getElementById('setClose').onclick = () => setDlg.close();
+  setDlg.addEventListener('click', e => { if (e.target === setDlg) setDlg.close(); });
+  document.getElementById('help').onclick = () => helpDlg.showModal();
+  document.getElementById('helpClose').onclick = () => helpDlg.close();
+  helpDlg.addEventListener('click', e => { if (e.target === helpDlg) helpDlg.close(); }); // click on the dimmed area
+  // Zoom scales the on-screen drawing only (the width and height of the svg; its viewBox keeps the shapes sharp).
+  const rightEl = document.getElementById('rightPanel'), zPct = document.getElementById('zPct');
+  let zoom = 1; try { zoom = Math.min(4, Math.max(0.25, +localStorage.getItem('shorthand_schematic_v8_zoom') || 1)); } catch (e) {}
+  // The canvas is an endless white plane with no scroll bars. view is where the drawing's top-left corner sits on
+  // the plane, in screen pixels; it has no limits, so the drawing can be moved anywhere and zoomed around any point.
+  const HOME = { x: 40, y: 64 };
+  let view = { x: HOME.x, y: HOME.y };
+  function applyZoom() {
+    const sv = out.querySelector('svg');
+    if (sv && lastSVG) {
+      const w = +lastSVG.match(/width="(\d+)"/)[1], h = +lastSVG.match(/height="(\d+)"/)[1];
+      sv.setAttribute('width', w * zoom); sv.setAttribute('height', h * zoom);
+    }
+    out.style.transform = `translate(${view.x}px, ${view.y}px)`;
+    zPct.textContent = Math.round(zoom * 100) + '%';
+  }
+  // Zoom keeps the screen point (cx, cy), relative to the canvas, fixed on the same spot of the drawing.
+  function setZoom(z, cx, cy) {
+    const old = zoom;
+    zoom = Math.min(4, Math.max(0.25, z));
+    if (cx === undefined) { cx = rightEl.clientWidth / 2; cy = rightEl.clientHeight / 2; }
+    view.x = cx - (cx - view.x) * zoom / old;
+    view.y = cy - (cy - view.y) * zoom / old;
+    try { localStorage.setItem('shorthand_schematic_v8_zoom', String(zoom)); } catch (e) {}
+    applyZoom();
+  }
+  document.getElementById('zIn').onclick = () => setZoom(zoom * 1.25);
+  document.getElementById('zOut').onclick = () => setZoom(zoom / 1.25);
+  // The percent button fits the whole drawing in view and centers it; pressed again it returns to 100% at the start corner.
+  document.getElementById('zFit').onclick = () => {
+    if (!lastSVG) return;
+    const w = +lastSVG.match(/width="(\d+)"/)[1], h = +lastSVG.match(/height="(\d+)"/)[1];
+    const fit = Math.min(4, Math.max(0.25, Math.min((rightEl.clientWidth - 80) / w, (rightEl.clientHeight - 120) / h)));
+    if (Math.abs(fit - zoom) < 0.01) { zoom = 1; view = { x: HOME.x, y: HOME.y }; }
+    else { zoom = fit; view = { x: (rightEl.clientWidth - w * fit) / 2, y: (rightEl.clientHeight - h * fit) / 2 + 20 }; }
+    try { localStorage.setItem('shorthand_schematic_v8_zoom', String(zoom)); } catch (e) {}
+    applyZoom();
+  };
+  // The wheel zooms (a pinch gesture arrives as ctrl + wheel and zooms too) around the pointer.
+  rightEl.addEventListener('wheel', e => {
+    if (e.target.closest('#zoomBar')) return;
+    e.preventDefault();
+    const dy = Math.max(-120, Math.min(120, e.deltaY * (e.deltaMode === 1 ? 33 : 1)));
+    const r = rightEl.getBoundingClientRect();
+    setZoom(zoom * Math.exp(-dy * 0.002), e.clientX - r.left, e.clientY - r.top);
+  }, { passive: false });
+
+  // Drag anywhere on the canvas to move the drawing. A drag never counts as a click, so it cannot change a block's shape.
+  let pan = null;
+  rightEl.addEventListener('pointerdown', e => {
+    if (e.button !== 0 || e.target.closest('#zoomBar')) return;
+    // The block is read now, not at click time: pressing on the canvas blurs the script, which redraws the
+    // diagram before the button comes up, so the click itself would land on a replaced element and be lost.
+    const g = e.target.closest('.blk');
+    pan = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y, moved: false, id: e.pointerId,
+      blk: g ? { ln: +g.dataset.ln, idx: +g.dataset.idx } : null };
+  });
+  rightEl.addEventListener('pointermove', e => {
+    if (!pan) return;
+    const dx = e.clientX - pan.x, dy = e.clientY - pan.y;
+    if (!pan.moved && Math.abs(dx) + Math.abs(dy) < 5) return;
+    if (!pan.moved) { pan.moved = true; rightEl.setPointerCapture(pan.id); rightEl.classList.add('panning'); }
+    view.x = pan.vx + dx; view.y = pan.vy + dy;
+    applyZoom();
+  });
+  const endPan = e => {
+    // a press and release on a block without dragging steps its shape; a drag never does
+    const hit = pan && !pan.moved && pan.blk && e.type === 'pointerup' ? pan.blk : null;
+    pan = null; rightEl.classList.remove('panning');
+    if (hit) stepShape(hit.ln, hit.idx);
+  };
+  rightEl.addEventListener('pointerup', endPan);
+  rightEl.addEventListener('pointercancel', endPan);
+
+  // Step a block's shape; the matching word is written into that script line.
+  function stepShape(ln, idx) {
+    const text = src.value, model = parseSheet(text);
+    const els = model.nodes.filter(n => n.type === 'el' && n.ln === ln).sort((a, b) => a.idx - b.idx);
+    if (!els[idx]) return;
+    const t = setShape(text, ln, idx, nextShape(els[idx]), els.map(() => 'auto'));
+    if (t === text) return;
+    // keep the caret on the same line and column even though a line above it may have grown
+    const before = text.slice(0, src.selectionStart).split('\n'), cl = before.length - 1, col = before[cl].length;
+    const nl = t.split('\n');
+    let pos = 0; for (let i = 0; i < cl; i++) pos += nl[i].length + 1;
+    setText(t, pos + Math.min(col, (nl[cl] || '').length));
+    update();
+  }
+
+  // Collapse the script panel so the diagram gets the whole width; the choice is remembered per browser.
+  const mainEl = document.querySelector('main'), toggleBtn = document.getElementById('togglePanel');
+  function setCollapsed(on) {
+    mainEl.classList.toggle('collapsed', on);
+    // the chevron on the panel's border points the way the panel will move
+    toggleBtn.innerHTML = on ? '&rsaquo;' : '&lsaquo;';
+    const label = on ? 'Show script panel' : 'Hide script panel';
+    toggleBtn.title = label; toggleBtn.setAttribute('aria-label', label);
+    toggleBtn.setAttribute('aria-expanded', String(!on));
+    try { localStorage.setItem('shorthand_schematic_v8_collapsed', on ? '1' : '0'); } catch (e) {}
+  }
+  toggleBtn.onclick = () => setCollapsed(!mainEl.classList.contains('collapsed'));
+  let wasCollapsed = false; try { wasCollapsed = localStorage.getItem('shorthand_schematic_v8_collapsed') === '1'; } catch (e) {}
+  setCollapsed(wasCollapsed);
+
+  // The script panel's right border is a divider: drag it (or use the arrow keys) to set the panel width.
+  // The width is kept in pixels, between 140px and 70% of the page, and remembered per browser.
+  const divider = document.getElementById('divider'), leftEl = document.getElementById('leftPanel');
+  const stacked = () => window.matchMedia('(max-width:760px)').matches; // stacked layout has nothing to resize
+  const setLeftW = px => {
+    const w = Math.round(Math.max(140, Math.min(mainEl.getBoundingClientRect().width * 0.7, px)));
+    mainEl.style.setProperty('--leftw', w + 'px');
+    try { localStorage.setItem('shorthand_schematic_v8_leftw', String(w)); } catch (e) {}
+  };
+  try { const w = +localStorage.getItem('shorthand_schematic_v8_leftw'); if (w) mainEl.style.setProperty('--leftw', w + 'px'); } catch (e) {}
+  let dragging = false;
+  divider.addEventListener('pointerdown', e => {
+    if (e.button !== 0 || e.target.closest('#togglePanel') || stacked() || mainEl.classList.contains('collapsed')) return;
+    dragging = true; divider.setPointerCapture(e.pointerId); divider.classList.add('drag'); e.preventDefault();
+  });
+  divider.addEventListener('pointermove', e => { if (dragging) setLeftW(e.clientX - mainEl.getBoundingClientRect().left); });
+  const endDrag = () => { dragging = false; divider.classList.remove('drag'); };
+  divider.addEventListener('pointerup', endDrag);
+  divider.addEventListener('pointercancel', endDrag);
+  divider.addEventListener('dblclick', e => { // double-click goes back to the default width
+    if (e.target.closest('#togglePanel') || stacked()) return;
+    mainEl.style.removeProperty('--leftw');
+    try { localStorage.removeItem('shorthand_schematic_v8_leftw'); } catch (err) {}
+  });
+  divider.addEventListener('keydown', e => {
+    if ((e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') || stacked() || mainEl.classList.contains('collapsed')) return;
+    e.preventDefault();
+    setLeftW(leftEl.getBoundingClientRect().width + (e.key === 'ArrowRight' ? 20 : -20));
+  });
+  src.addEventListener('scroll', syncScroll);
+  ['keyup', 'click', 'focus', 'blur'].forEach(ev => src.addEventListener(ev, update));
+  // moving the caret with the mouse ends the "just written out" state, as any other key does
+  src.addEventListener('mousedown', () => { srcJust = false; });
+  cur.addEventListener('mousedown', () => { curJust = false; });
+  // Text that arrives whole (examples, saved text, paste) is tabbed immediately, not only after the next keystroke.
+  const tidy = t => reindentWithCaret(t, 0).text;
+  document.getElementById('ex').onclick = () => { src.value = tidy(EXAMPLE); update(); };
+  document.getElementById('svg').onclick = () => { if (lastSVG) download('schematic.svg', new Blob([lastSVG], { type: 'image/svg+xml' })); };
+  document.getElementById('png').onclick = () => {
+    if (!lastSVG) return;
+    const img = new Image(), m = lastSVG.match(/width="(\d+)" height="(\d+)"/), s = 2;
+    img.onload = () => {
+      const c = document.createElement('canvas'); c.width = m[1] * s; c.height = m[2] * s;
+      const g = c.getContext('2d'); g.scale(s, s); g.drawImage(img, 0, 0);
+      c.toBlob(b => download('schematic.png', b));
+    };
+    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(lastSVG);
+  };
+  let saved = ''; try { saved = localStorage.getItem('shorthand_schematic_v8_src') || ''; } catch (e) {}
+  src.value = tidy(saved || EXAMPLE);
+  src.setSelectionRange(src.value.length, src.value.length); // the box starts on the last line, ready to type
+  update();
+}
+</script>
+</body>
+</html>
