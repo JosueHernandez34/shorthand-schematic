@@ -211,5 +211,18 @@ ok('a flow diagram has no circuit notes', !m.errors.length && !m.warnings.length
 m = P('*A, R1\\ proc, RES = 1k; , MEAS V,');
 ok('a flow block among parts is named by the solver, not the checks', !m.errors.length && has(m.warnings, /flow block/), show(m));
 
+// partial words are capitals as typed and a prefix with one possible word autofills (Josue, 11/25)
+vm.runInContext('this.A.caps = capsAtCaret', ctx);
+const cp = t => A.caps(t, t.length) || t;
+ok('letters of a specifier word turn to capitals as they are typed', cp('*A\\ pr') === '*A\\ PR' && cp('*A\\ tri, ye') === '*A\\ tri, YE' && cp('*A\\ [bl') === '*A\\ [BL' && cp('*A\\ me') === '*A\\ ME');
+ok('a single letter, a non-word, a value and a name are left alone', cp('*A\\ p') === '*A\\ p' && cp('*A\\ qz') === '*A\\ qz' && cp('*A\\ proc = re') === '*A\\ proc = re' && cp('*pr') === '*pr' && cp('*A\\ RES = [2*Vx') === '*A\\ RES = [2*Vx');
+ok('a prefix with one word autofills on space, comma or Enter', ex('*A\\ PRO ') === '*A\\ PROC ' && ex('*A\\ yel,') === '*A\\ YELLOW,' && ex('*A\\ vol_') === '*A\\ vol_' && ex('*A\\ volt_s ') === '*A\\ VOLT_SRC ' && ex('*A\\ dep_c ') === '*A\\ DEP_CURR_SRC ');
+ok('a prefix that fits several words does not autofill, only capitals', ex('*A\\ re ') === '*A\\ re ' && ex('*A\\ gr ') === '*A\\ gr ' && ex('*A\\ RE ') === '*A\\ RE ');
+ok('Enter autofills the word at the end of the line', en(H + '*A\\ YEL') === H + '*A\\ YELLOW\n*');
+
+vm.runInContext('this.A.cr = convertReturnDigits', ctx);
+const crt = (t) => A.cr(t, t.length).text;
+ok('a number typed right after RETURN gets a caret, in capitals', crt('*A\\ BRANCH, RETURN2') === '*A\\ BRANCH, RETURN^2' && crt('*A\\ return2') === '*A\\ RETURN^2' && crt('*A\\ RETURN^2') === '*A\\ RETURN^2' && crt('*RETURN2\\ ') === '*RETURN2\\ ');
+
 console.log(fails ? fails + ' FAILED' : 'all passed');
 process.exit(fails ? 1 : 0);

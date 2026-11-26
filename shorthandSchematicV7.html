@@ -547,13 +547,41 @@ const takesValue = w => VALUE_SHAPES.has(shapeOf(w));
 const OTHER_WORDS = ['null', 'meas', 'rev', 'pole', 'polar', 'rect', 'rectangular', 'sine', 'sinusoidal', 'voltage', 'current'];
 const SPEC_WORDS = new Set([...Object.keys(SHAPE_WORDS).filter(k => k.length > 1), ...OTHER_WORDS, ...Object.values(CODE_WORDS).map(w => w.toLowerCase())]);
 const EXPANDED = new RegExp('(?:' + [...new Set([...Object.values(LETTER_WORDS), ...Object.values(CODE_WORDS), 'END', ...COLOR_WORDS, ...[...SPEC_WORDS].map(w => w.toUpperCase())])].join('|') + '|RETURN\\^\\d+)');
+// Every multi-letter specifier word, for the as-you-type capitals and the autofill (Josue, 11/25).
+const ALL_WORDS = [...new Set([...Object.values(LETTER_WORDS), ...Object.values(CODE_WORDS), ...CMD_WORDS.map(w => w.toUpperCase()),
+  ...COLOR_WORDS, ...[...SPEC_WORDS].map(w => w.toUpperCase()), 'RETURN'])].filter(w => w.length > 1);
+// Two words that mean the same thing (PROC and PROCESS) are not ambiguous, so a prefix of only those still autofills.
+const meaning = w => SHAPE_WORDS[w.toLowerCase()] || (COLORS[w.toLowerCase()] ? w : 0) || w;
+// The word a prefix of two or more letters completes to, or null when it is already whole or fits several words.
+function completeWord(tok) {
+  const up = tok.toUpperCase();
+  if (up.length < 2 || ALL_WORDS.includes(up)) return null;
+  const hits = ALL_WORDS.filter(w => w.startsWith(up));
+  if (!hits.length) return null;
+  return hits.every(w => meaning(w) === meaning(hits[0])) ? hits.reduce((a, b) => a.length <= b.length ? a : b) : null;
+}
 // The word a typed token is written out as: a small letter, r2, or a part code (a one-letter code exactly as typed,
-// a longer one in any case, like everywhere else).
+// a longer one in any case, like everywhere else). A prefix with only one possible word is completed (autofill).
 function wordFor(tok) {
   if (/^(?:return|r)\^?\d+$/.test(tok)) return 'RETURN^' + tok.replace(/\D/g, '');
   if (CMD_WORDS.includes(tok.toLowerCase()) || (tok.length > 1 && (COLORS[tok.toLowerCase()] || SPEC_WORDS.has(tok.toLowerCase())))) return tok.toUpperCase();
   if (tok.length === 1) return LETTER_WORDS[tok] || CODE_WORDS[tok];
-  return CODE_WORDS[tok.toUpperCase()];
+  return CODE_WORDS[tok.toUpperCase()] || completeWord(tok);
+}
+
+// While a specifier word is still being typed (Josue, 11/25), the letters so far are shown in capitals as soon as they
+// can only become a specifier word, so "pr" reads PR before it completes. A single letter waits: C and c mean different
+// things. Returns the new text (same length, so the caret stays), or null when nothing changes.
+function capsAtCaret(text, caret) {
+  const ls = text.lastIndexOf('\n', caret - 1) + 1;
+  const before = text.slice(ls, caret);
+  const m = before.match(/(^|[\s,;[])([A-Za-z_]{2,13})$/);
+  if (!m) return null;
+  const tok = m[2], up = tok.toUpperCase();
+  if (tok === up || !ALL_WORDS.some(w => w.startsWith(up))) return null;
+  const from = ls + before.length - tok.length;
+  if (!inSpecifier(text.slice(ls, from))) return null;
+  return text.slice(0, from) + up + text.slice(caret);
 }
 
 // True when the text before a spot on a line is in the specifier and not inside a value, where a letter is a
@@ -1308,7 +1336,7 @@ function convertReturnDigits(text, caret) {
     let rest = m[1], added = 0;
     rest = rest.replace(/\breturn(\d+)/gi, (all, d, at) => {
       if (start + cut + at + 6 <= caret) added++;
-      return 'return^' + d;
+      return 'RETURN^' + d; // capitals like every specifier word, or RETURN typed in capitals would drop to lower case here
     });
     shift += added;
     return raw.slice(0, cut) + rest;
@@ -1809,6 +1837,7 @@ if (typeof document !== 'undefined') {
     const nameLn = src.value.split('\n').findIndex(l => l.trim()) + 1;
     const x = e.inputType === 'insertText' ? expandAtCaret(v, vc, caretLine() > nameLn) : null;
     if (x) { v = x.text; vc = x.caret; }
+    else if (e.inputType === 'insertText') v = capsAtCaret(v, vc) || v;
     curJust = !!(x && x.undoable);
     applyBar(barEdit(src.value, caretLine(), v, vc));
   });
@@ -1918,6 +1947,7 @@ if (typeof document !== 'undefined') {
     // only a typed character or Enter writes a letter out; a paste keeps the script exactly as pasted
     const x = (e.inputType === 'insertText' || e.inputType === 'insertLineBreak') ? expandAtCaret(t, c) : null;
     if (x) { t = x.text; c = x.caret; }
+    else if (e.inputType === 'insertText') t = capsAtCaret(t, c) || t;
     srcJust = !!(x && x.undoable);
     const r = convertReturnDigits(t, c); t = r.text; c = r.caret;
     const sp = splitSequences(t, c), split = sp.text !== t; t = sp.text; c = sp.caret;
